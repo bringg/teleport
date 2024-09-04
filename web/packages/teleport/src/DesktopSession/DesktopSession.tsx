@@ -33,12 +33,13 @@ import AuthnDialog from 'teleport/components/AuthnDialog';
 import useDesktopSession, {
   clipboardSharingMessage,
   directorySharingPossible,
+  getDisplaySize,
   isSharingClipboard,
   isSharingDirectory,
 } from './useDesktopSession';
 import TopBar from './TopBar';
 
-import type { State, WebsocketAttempt } from './useDesktopSession';
+import type { State, TdpConnection } from './useDesktopSession';
 import type { WebAuthnState } from 'teleport/lib/useWebAuthn';
 
 export function DesktopSessionContainer() {
@@ -58,36 +59,24 @@ export function DesktopSession(props: State) {
     tdpClient,
     username,
     hostname,
-    directorySharingState,
-    setDirectorySharingState,
-    clientOnPngFrame,
-    clientOnBitmapFrame,
-    clientOnClientScreenSpec,
-    clientOnClipboardData,
-    clientOnTdpError,
-    clientOnTdpWarning,
-    clientOnTdpInfo,
-    clientOnWsClose,
-    clientOnWsOpen,
-    canvasOnKeyDown,
-    canvasOnKeyUp,
-    canvasOnFocusOut,
-    canvasOnMouseMove,
-    canvasOnMouseDown,
-    canvasOnMouseUp,
-    canvasOnMouseWheelScroll,
-    canvasOnContextMenu,
-    windowOnResize,
-    clientScreenSpecToRequest,
-    clipboardSharingState,
-    setClipboardSharingState,
-    onShareDirectory,
+    tdpConnection,
+    onMouseDown,
+    onFocusOut,
+    onMouseWheelScroll,
+    onKeyDown,
+    onKeyUp,
+    onMouseUp,
+    onMouseMove,
     onCtrlAltDel,
     alerts,
     onRemoveAlert,
+    onShareDirectory,
+    onDisconnect,
+    clipboardSharingState,
+    directorySharingState,
+    clientCanvasProps,
+    windowOnResize,
     fetchAttempt,
-    tdpConnection,
-    wsConnection,
     showAnotherSessionActiveDialog,
   } = props;
 
@@ -103,39 +92,33 @@ export function DesktopSession(props: State) {
         prevState,
         fetchAttempt,
         tdpConnection,
-        wsConnection,
         showAnotherSessionActiveDialog,
         webauthn
       )
     );
-  }, [
-    fetchAttempt,
-    tdpConnection,
-    wsConnection,
-    showAnotherSessionActiveDialog,
-    webauthn,
-  ]);
+  }, [fetchAttempt, tdpConnection, showAnotherSessionActiveDialog, webauthn]);
+
+  // Call connect after all listeners have been registered
+  useEffect(() => {
+    if (tdpClient && screenState.canvasState.shouldConnect) {
+      const client = tdpClient.current;
+      client.connect(getDisplaySize());
+      return () => {
+        client.shutdown();
+      };
+    }
+  }, [screenState.canvasState.shouldConnect, tdpClient]);
 
   return (
     <Flex flexDirection="column">
       <TopBar
-        onDisconnect={() => {
-          setClipboardSharingState(prevState => ({
-            ...prevState,
-            isSharing: false,
-          }));
-          setDirectorySharingState(prevState => ({
-            ...prevState,
-            isSharing: false,
-          }));
-          tdpClient.shutdown();
-        }}
+        onDisconnect={onDisconnect}
         userHost={`${username}@${hostname}`}
-        canShareDirectory={directorySharingPossible(directorySharingState)}
+        onShareDirectory={onShareDirectory}
+        canShareDirectory={directorySharingPossible(directorySharingState)} // could probably export this value from useDesktopSession
         isSharingDirectory={isSharingDirectory(directorySharingState)}
         isSharingClipboard={isSharingClipboard(clipboardSharingState)}
         clipboardSharingMessage={clipboardSharingMessage(clipboardSharingState)}
-        onShareDirectory={onShareDirectory}
         onCtrlAltDel={onCtrlAltDel}
         alerts={alerts}
         onRemoveAlert={onRemoveAlert}
@@ -151,31 +134,18 @@ export function DesktopSession(props: State) {
       {screenState.screen === 'processing' && <Processing />}
 
       <TdpClientCanvas
-        style={{
-          display: screenState.canvasState.shouldDisplay ? 'flex' : 'none',
-        }}
-        client={tdpClient}
-        clientShouldConnect={screenState.canvasState.shouldConnect}
-        clientScreenSpecToRequest={clientScreenSpecToRequest}
-        clientOnPngFrame={clientOnPngFrame}
-        clientOnBmpFrame={clientOnBitmapFrame}
-        clientOnClientScreenSpec={clientOnClientScreenSpec}
-        clientOnClipboardData={clientOnClipboardData}
-        clientOnTdpError={clientOnTdpError}
-        clientOnTdpWarning={clientOnTdpWarning}
-        clientOnTdpInfo={clientOnTdpInfo}
-        clientOnWsClose={clientOnWsClose}
-        clientOnWsOpen={clientOnWsOpen}
-        canvasOnKeyDown={canvasOnKeyDown}
-        canvasOnKeyUp={canvasOnKeyUp}
-        canvasOnFocusOut={canvasOnFocusOut}
-        canvasOnMouseMove={canvasOnMouseMove}
-        canvasOnMouseDown={canvasOnMouseDown}
-        canvasOnMouseUp={canvasOnMouseUp}
-        canvasOnMouseWheelScroll={canvasOnMouseWheelScroll}
-        canvasOnContextMenu={canvasOnContextMenu}
+        {...clientCanvasProps}
+        onMouseWheelScroll={onMouseWheelScroll}
+        onMouseUp={onMouseUp}
+        onMouseMove={onMouseMove}
+        onFocusOut={onFocusOut}
         windowOnResize={windowOnResize}
-        updatePointer={true}
+        onKeyDown={onKeyDown}
+        onKeyUp={onKeyUp}
+        onMouseDownDS={onMouseDown}
+        style={{
+          display: 'flex',
+        }}
       />
     </Flex>
   );
@@ -226,6 +196,7 @@ const AlertDialog = ({ screenState }: { screenState: ScreenState }) => (
   </Dialog>
 );
 
+// TODO (avatus) : dont pass the entire state here if we only need 1 method
 const AnotherSessionActiveDialog = (props: State) => {
   return (
     <Dialog
@@ -279,8 +250,7 @@ const invalidStateMessage = 'internal application error';
 const nextScreenState = (
   prevState: ScreenState,
   fetchAttempt: Attempt,
-  tdpConnection: Attempt,
-  wsConnection: WebsocketAttempt,
+  tdpConnection: TdpConnection,
   showAnotherSessionActiveDialog: boolean,
   webauthn: WebAuthnState
 ): ScreenState => {
@@ -301,14 +271,11 @@ const nextScreenState = (
   const showAnotherSessionActive = showAnotherSessionActiveDialog;
   const showMfa = webauthn.requested;
   const showAlert =
-    fetchAttempt.status === 'failed' || // Fetch attempt failed
-    tdpConnection.status === 'failed' || // TDP connection failed
-    tdpConnection.status === '' || // TDP connection ended gracefully server-side
-    wsConnection.status === 'closed'; // Websocket closed (could mean client side graceful close or unexpected close, the message will tell us which)
+    fetchAttempt.status === 'failed' || // TODO(zmb3) handle websocket closed // Fetch attempt failed
+    tdpConnection.status === 'closed'; // TDP connection failed
 
   const atLeastOneAttemptProcessing =
-    fetchAttempt.status === 'processing' ||
-    tdpConnection.status === 'processing';
+    fetchAttempt.status === 'processing' || tdpConnection.status === '';
   const noDialogs = !(showMfa || showAnotherSessionActive || showAlert);
   const showProcessing = atLeastOneAttemptProcessing && noDialogs;
 
@@ -336,7 +303,6 @@ const nextScreenState = (
       alertMessage: calculateAlertMessage(
         fetchAttempt,
         tdpConnection,
-        wsConnection,
         showAnotherSessionActiveDialog,
         prevState
       ),
@@ -365,27 +331,22 @@ const nextScreenState = (
 /* eslint-disable no-console */
 const calculateAlertMessage = (
   fetchAttempt: Attempt,
-  tdpConnection: Attempt,
-  wsConnection: WebsocketAttempt,
+  tdpConnection: TdpConnection,
   showAnotherSessionActiveDialog: boolean,
   prevState: ScreenState
 ): string => {
   let message = '';
   if (fetchAttempt.status === 'failed') {
     message = fetchAttempt.statusText || 'fetch attempt failed';
-  } else if (tdpConnection.status === 'failed') {
+  } else if (tdpConnection.status === 'open') {
     message = tdpConnection.statusText || 'TDP connection failed';
-  } else if (tdpConnection.status === '') {
+  } else if (tdpConnection.status === 'closed') {
     message = tdpConnection.statusText || 'TDP connection ended gracefully';
-  } else if (wsConnection.status === 'closed') {
-    message =
-      wsConnection.statusText || 'websocket disconnected for an unknown reason';
   } else {
     console.error('invalid state');
     console.error({
       fetchAttempt,
       tdpConnection,
-      wsConnection,
       showAnotherSessionActiveDialog,
       prevState,
     });
@@ -397,11 +358,11 @@ const calculateAlertMessage = (
 
 type ScreenState = {
   screen:
-    | 'mfa'
-    | 'anotherSessionActive'
-    | 'alert dialog'
-    | 'processing'
-    | 'canvas';
+    | 'mfa' // tell the user they are about to be prompted for per-session MFA
+    | 'anotherSessionActive' // show a dialog explaining that this desktop may have an active session
+    | 'alert dialog' // show the "Disconnected" dialog
+    | 'processing' // show a loading spinner
+    | 'canvas'; // show the remote desktop session during normal operation
 
   alertMessage?: string;
   canvasState: {

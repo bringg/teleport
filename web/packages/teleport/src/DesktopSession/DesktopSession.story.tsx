@@ -52,9 +52,6 @@ const props: State = {
   },
   tdpClient: fakeClient(),
   username: 'user',
-  clientOnWsOpen: () => {},
-  clientOnWsClose: () => {},
-  wsConnection: { status: 'closed', statusText: 'websocket closed' },
   setClipboardSharingState: () => {},
   directorySharingState: {
     allowedByAcl: true,
@@ -106,7 +103,6 @@ export const BothProcessing = () => (
       readState: 'granted',
       writeState: 'granted',
     }}
-    wsConnection={{ status: 'open' }}
   />
 );
 
@@ -121,7 +117,6 @@ export const TdpProcessing = () => (
       readState: 'granted',
       writeState: 'granted',
     }}
-    wsConnection={{ status: 'open' }}
   />
 );
 
@@ -136,7 +131,6 @@ export const FetchProcessing = () => (
       readState: 'granted',
       writeState: 'granted',
     }}
-    wsConnection={{ status: 'open' }}
   />
 );
 
@@ -145,7 +139,6 @@ export const FetchError = () => (
     {...props}
     fetchAttempt={{ status: 'failed', statusText: 'some fetch  error' }}
     tdpConnection={{ status: 'success' }}
-    wsConnection={{ status: 'open' }}
   />
 );
 
@@ -157,7 +150,6 @@ export const TdpError = () => (
       status: 'failed',
       statusText: 'some tdp error',
     }}
-    wsConnection={{ status: 'closed' }}
   />
 );
 
@@ -169,7 +161,6 @@ export const TdpGraceful = () => (
       status: '',
       statusText: 'some tdp message',
     }}
-    wsConnection={{ status: 'closed' }}
   />
 );
 
@@ -185,7 +176,6 @@ export const ConnectedSettingsFalse = () => {
       tdpClient={client}
       fetchAttempt={{ status: 'success' }}
       tdpConnection={{ status: 'success' }}
-      wsConnection={{ status: 'open' }}
       clipboardSharingState={{
         allowedByAcl: false,
         browserSupported: false,
@@ -216,7 +206,6 @@ export const ConnectedSettingsTrue = () => {
       tdpClient={client}
       fetchAttempt={{ status: 'success' }}
       tdpConnection={{ status: 'success' }}
-      wsConnection={{ status: 'open' }}
       clipboardSharingState={{
         allowedByAcl: true,
         browserSupported: true,
@@ -235,12 +224,12 @@ export const ConnectedSettingsTrue = () => {
   );
 };
 
+// TODO(zmb3)
 export const Disconnected = () => (
   <DesktopSession
     {...props}
     fetchAttempt={{ status: 'success' }}
     tdpConnection={{ status: 'success' }}
-    wsConnection={{ status: 'closed', statusText: 'session disconnected' }}
   />
 );
 
@@ -249,7 +238,6 @@ export const UnintendedDisconnect = () => (
     {...props}
     fetchAttempt={{ status: 'success' }}
     tdpConnection={{ status: 'success' }}
-    wsConnection={{ status: 'closed' }}
   />
 );
 
@@ -264,7 +252,6 @@ export const WebAuthnPrompt = () => (
       readState: 'granted',
       writeState: 'granted',
     }}
-    wsConnection={{ status: 'open' }}
     webauthn={{
       errorText: '',
       requested: true,
@@ -284,7 +271,6 @@ export const ClipboardSharingDisabledRbac = () => (
     {...props}
     fetchAttempt={{ status: 'success' }}
     tdpConnection={{ status: 'success' }}
-    wsConnection={{ status: 'open' }}
     clipboardSharingState={{ browserSupported: true, allowedByAcl: false }}
   />
 );
@@ -294,7 +280,6 @@ export const ClipboardSharingDisabledIncompatibleBrowser = () => (
     {...props}
     fetchAttempt={{ status: 'success' }}
     tdpConnection={{ status: 'success' }}
-    wsConnection={{ status: 'open' }}
     clipboardSharingState={{ browserSupported: false, allowedByAcl: true }}
   />
 );
@@ -304,7 +289,6 @@ export const ClipboardSharingDisabledBrowserPermissions = () => (
     {...props}
     fetchAttempt={{ status: 'success' }}
     tdpConnection={{ status: 'success' }}
-    wsConnection={{ status: 'open' }}
     clipboardSharingState={{
       browserSupported: true,
       allowedByAcl: true,
@@ -361,7 +345,6 @@ export const Alerts = () => {
         tdpClient={client}
         fetchAttempt={{ status: 'success' }}
         tdpConnection={{ status: 'success' }}
-        wsConnection={{ status: 'open' }}
         clipboardSharingState={{
           allowedByAcl: true,
           browserSupported: true,
