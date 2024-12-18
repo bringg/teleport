@@ -2327,6 +2327,11 @@ func (s *Server) handleTCPIPForwardRequest(ctx context.Context, ccx *sshutils.Co
 	// Close the listener once the connection is closed, if it hasn't
 	// been closed already via a cancel-tcpip-forward request.
 	ccx.AddCloser(utils.CloseFunc(func() error {
+		event := scx.GetPortForwardEvent(events.PortForwardRemoteEvent, events.PortForwardStopCode, scx.SrcAddr)
+		if err := s.EmitAuditEvent(context.Background(), &event); err != nil {
+			s.logger.WarnContext(context.Background(), "Failed to emit audit event", "error", err)
+		}
+
 		listener, ok := s.remoteForwardingMap.LoadAndDelete(scx.SrcAddr)
 		if ok {
 			return trace.Wrap(listener.Close())
