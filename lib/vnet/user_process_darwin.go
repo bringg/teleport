@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/gravitational/trace"
+	"github.com/jonboulle/clockwork"
 	"golang.zx2c4.com/wireguard/tun"
 
 	"github.com/gravitational/teleport/lib/vnet/daemon"
@@ -106,12 +107,7 @@ func runPlatformUserProcess(ctx context.Context, config *UserProcessConfig) (pm 
 		}
 	}
 
-	appResolver, err := newTCPAppResolver(config.AppProvider,
-		WithClusterConfigCache(config.ClusterConfigCache))
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
+	appResolver := newTCPAppResolver(config.AppProvider, clockwork.NewRealClock())
 	ns, err := newNetworkStack(&networkStackConfig{
 		tunDevice:          tun,
 		ipv6Prefix:         ipv6Prefix,
