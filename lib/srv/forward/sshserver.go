@@ -884,7 +884,7 @@ func (s *Server) handleClientChannels(ctx context.Context, forwardedTCPIP <-chan
 
 		s.emitAuditEventWithLog(ctx, &apievents.PortForward{
 			Metadata: apievents.Metadata{
-				Type: events.PortForwardEvent,
+				Type: events.PortForwardRemoteEvent,
 				Code: events.PortForwardStopCode,
 			},
 			UserMetadata: s.identityContext.GetUserMetadata(),
@@ -924,7 +924,7 @@ func (s *Server) handleClientChannels(ctx context.Context, forwardedTCPIP <-chan
 
 			s.emitAuditEventWithLog(ctx, &apievents.PortForward{
 				Metadata: apievents.Metadata{
-					Type: events.PortForwardEvent,
+					Type: events.PortForwardRemoteEvent,
 					Code: events.PortForwardCode,
 				},
 				UserMetadata: s.identityContext.GetUserMetadata(),
