@@ -1,5 +1,3 @@
-//go:build piv && !pivtest
-
 // Copyright 2024 Gravitational, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
