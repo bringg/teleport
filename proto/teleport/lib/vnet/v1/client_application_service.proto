@@ -47,6 +47,8 @@ service ClientApplicationService {
   // to a multi-port TCP app because the provided port does not match any of the
   // TCP ports in the app spec.
   rpc OnInvalidLocalPort(OnInvalidLocalPortRequest) returns (OnInvalidLocalPortResponse);
+  // GetTargetOSConfiguration gets the target OS configuration.
+  rpc GetTargetOSConfiguration(GetTargetOSConfigurationRequest) returns (GetTargetOSConfigurationResponse);
 }
 
 // AuthenticateProcessRequest is a request for AuthenticateProcess.
@@ -198,3 +200,26 @@ message OnInvalidLocalPortRequest {
 
 // OnInvalidLocalPortResponse is a response for OnInvalidLocalPort.
 message OnInvalidLocalPortResponse {}
+
+// GetTargetOSConfigurationRequest is a request for the target host OS configuration.
+message GetTargetOSConfigurationRequest {}
+
+// GetTargetOSConfigurationResponse is a response including the target host OS configuration.
+message GetTargetOSConfigurationResponse {
+  TargetOSConfiguration target_os_configuration = 1;
+}
+
+// TargetOSConfiguration holds desired OS configuration parameters that need to
+// be fetched from the client application.
+message TargetOSConfiguration {
+  // dns_zones is a list of all DNS zones that VNet should handle queries for. This
+  // should include the public hostname of every cluster the user is logged in
+  // to, and all configured custom DNS zones from all clusters.
+  repeated string dns_zones = 1;
+  // ipv4_cidr_ranges is a list of IPv4 CIDR ranges that VNet addresses may be
+  // assigned from, these ranges should all be routed to the VNet TUN interface.
+  // This should include the custom range configured for each cluster the user
+  // is logged in to, and if any cluster does not configure a custom range it
+  // should also include the default range.
+  repeated string ipv4_cidr_ranges = 2;
+}
