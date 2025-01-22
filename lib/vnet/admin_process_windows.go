@@ -18,11 +18,17 @@ package vnet
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
+	"golang.org/x/sync/errgroup"
 	"golang.zx2c4.com/wireguard/tun"
+)
+
+const (
+	tunInterfaceName = "TeleportVNet"
 )
 
 type windowsAdminProcessConfig struct {
@@ -48,7 +54,7 @@ func runWindowsAdminProcess(ctx context.Context, cfg *windowsAdminProcessConfig)
 		return trace.Wrap(err, "authenticating user process")
 	}
 
-	device, err := tun.CreateTUN("TeleportVNet", mtu)
+	device, err := tun.CreateTUN(tunInterfaceName, mtu)
 	if err != nil {
 		return trace.Wrap(err, "creating TUN device")
 	}
@@ -68,8 +74,15 @@ func runWindowsAdminProcess(ctx context.Context, cfg *windowsAdminProcessConfig)
 		return trace.Wrap(err, "creating network stack")
 	}
 
-	osConfigProvider := newRemoteOSConfigProvider(clt, tunName,
-		networkStackConfig.ipv6Prefix.String(), networkStackConfig.dnsIPv6.String())
+	osConfigProvider, err := newRemoteOSConfigProvider(
+		clt,
+		tunName,
+		networkStackConfig.ipv6Prefix.String(),
+		networkStackConfig.dnsIPv6.String(),
+	)
+	if err != nil {
+		return trace.Wrap(err, "creating OS config provider")
+	}
 	osConfigurator := newOSConfigurator(osConfigProvider)
 
 	g, ctx := errgroup.WithContext(ctx)
