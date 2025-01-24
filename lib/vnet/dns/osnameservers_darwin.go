@@ -23,44 +23,21 @@ import (
 	"net"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/gravitational/trace"
-
-	"github.com/gravitational/teleport/lib/utils"
 )
 
 const (
 	confFilePath = "/etc/resolv.conf"
 )
 
-// OSUpstreamNameserverSource provides the list of upstream DNS nameservers
-// configured in the OS. The VNet DNS resolver will forward unhandles queries to
-// these nameservers.
-type OSUpstreamNameserverSource struct {
-	ttlCache *utils.FnCache
-}
-
-// NewOSUpstreamNameserverSource returns a new *OSUpstreamNameserverSource.
-func NewOSUpstreamNameserverSource() (*OSUpstreamNameserverSource, error) {
-	ttlCache, err := utils.NewFnCache(utils.FnCacheConfig{
-		TTL: 10 * time.Second,
-	})
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	return &OSUpstreamNameserverSource{
-		ttlCache: ttlCache,
-	}, nil
-}
-
-// UpstreamNameservers returns a cached view of the host OS's current default
-// nameservers, as found in /etc/resolv.conf.
-func (s *OSUpstreamNameserverSource) UpstreamNameservers(ctx context.Context) ([]string, error) {
-	return utils.FnCacheGet(ctx, s.ttlCache, 0, s.upstreamNameservers)
-}
-
-func (s *OSUpstreamNameserverSource) upstreamNameservers(ctx context.Context) ([]string, error) {
+// platformLoadUpstreamNameservers reads the OS DNS nameservers found in
+// /etc/resolv.conf. The comments in that file make it clear it is not actually
+// consulted for DNS hostname resolution, but MacOS seems to keep it up to date
+// with the current default nameservers as configured for the OS, and it is the
+// easiest place to read them. Eventually we should probably use a better
+// method, but for now this works.
+func platformLoadUpstreamNameservers(ctx context.Context) ([]string, error) {
 	f, err := os.Open(confFilePath)
 	if err != nil {
 		return nil, trace.Wrap(err, "opening %s", confFilePath)
