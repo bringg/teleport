@@ -233,12 +233,12 @@ func TestBuildSchema(t *testing.T) {
 		require.IsType(t, []string(nil), schemasRaw)
 		schemas := schemasRaw.([]string)
 		require.NotEmpty(t, schemas)
-		require.Contains(t, schemas[0], dateIndex, args...)
+		require.Contains(t, schemas[0], schemaV1EventsIndex, args...)
 	}
 	hasNoDateIndex := func(t require.TestingT, schemasRaw any, args ...any) {
 		require.IsType(t, []string(nil), schemasRaw)
 		schemas := schemasRaw.([]string)
-		require.NotContains(t, schemas[0], dateIndex, args...)
+		require.NotContains(t, schemas[0], schemaV1EventsIndex, args...)
 	}
 
 	tests := []struct {

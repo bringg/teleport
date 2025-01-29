@@ -20,6 +20,7 @@ package pgevents
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -78,7 +79,7 @@ const (
 	//
 	// If you are writing a new backend and stumbled on this comment, do not use
 	// a storage UUID type for session IDs. Use a string type.
-	schemaV1Table = `CREATE TABLE events (
+	schemaV1EventsTable = `CREATE TABLE events (
 		event_time timestamptz NOT NULL,
 		event_id uuid NOT NULL,
 		event_type text NOT NULL,
@@ -89,8 +90,7 @@ const (
 	);
 	CREATE INDEX events_search_session_events_idx ON events (session_id, event_time, event_id)
 		WHERE session_id != '00000000-0000-0000-0000-000000000000';`
-	dateIndex                  = "CREATE INDEX events_creation_time_idx ON events USING brin (creation_time);"
-	schemaV1TableWithDateIndex = schemaV1Table + "\n" + dateIndex
+	schemaV1EventsIndex = "CREATE INDEX events_creation_time_idx ON events USING brin (creation_time);"
 
 	// the 'n'::INTERVAL expression will saturate at around 292 years (which is
 	// perfectly acceptable for a retention period of the audit log), and the
@@ -105,6 +105,14 @@ const (
 	// would remove the expression in favor of ttl_expire_after (and it will
 	// error out if ttl_expire_after is unset)
 	schemaV1CockroachUnsetRowExpiry = "ALTER TABLE events RESET (ttl);"
+
+	schemaV1Cockroach = schemaV1EventsTable
+	schemaV1Postgres  = schemaV1EventsTable + "\n" + schemaV1EventsIndex
+
+	schemaV2AddOriginalSessionID = "ALTER TABLE events ADD COLUMN original_session_id text;"
+
+	// TODO(codingllama): Validate ALTER TABLE for cockroach?
+	schemaV2 = schemaV2AddOriginalSessionID
 )
 
 // Config is the configuration struct to pass to New.
@@ -294,16 +302,19 @@ func configureCockroachDBRetention(ctx context.Context, cfg *Config, pool *pgxpo
 }
 
 func buildSchema(isCockroach bool, cfg *Config) (schemas []string, err error) {
-	// If this is a real postgres, we cannot use self-expiring rows and we need
-	// to create an index for the deletion job to run. This index type is not
-	// supported by CockroachDB at the time of writing
-	// (see https://github.com/cockroachdb/cockroach/issues/41293)
-	if !isCockroach {
-		return []string{schemaV1TableWithDateIndex}, nil
+	if isCockroach {
+		cfg.Log.DebugContext(context.TODO(), "CockroachDB detected.")
+		schemas = []string{schemaV1Cockroach}
+	} else {
+		// If this is a real postgres, we cannot use self-expiring rows and we need
+		// to create an index for the deletion job to run. This index type is not
+		// supported by CockroachDB at the time of writing
+		// (see https://github.com/cockroachdb/cockroach/issues/41293)
+		schemas = []string{schemaV1Postgres}
 	}
 
-	cfg.Log.DebugContext(context.TODO(), "CockroachDB detected.")
-	return []string{schemaV1Table}, nil
+	schemas = append(schemas, schemaV2)
+	return schemas, nil
 }
 
 // Log is an external [events.AuditLogger] backed by a PostgreSQL database.
@@ -375,17 +386,23 @@ func (l *Log) EmitAuditEvent(ctx context.Context, event apievents.AuditEvent) er
 	}
 
 	eventID := uuid.New()
-	sessionID := l.deriveSessionID(ctx, events.GetSessionID(event))
+
+	sid := events.GetSessionID(event)
+	sessionID, derived := l.deriveSessionID(ctx, sid)
+	originalSID := sql.NullString{
+		String: sid,
+		Valid:  derived, // only record if sessionID is derived from a non-UUID
+	}
 
 	start := time.Now()
 	// if an event with the same event_id exists, it means that we inserted it
 	// and then failed to receive the success reply from the commit
 	_, err = pgcommon.RetryIdempotent(ctx, l.log, func() (struct{}, error) {
 		_, err := l.pool.Exec(ctx,
-			"INSERT INTO events (event_time, event_id, event_type, session_id, event_data)"+
-				" VALUES ($1, $2, $3, $4, $5)"+
+			"INSERT INTO events (event_time, event_id, event_type, session_id, original_session_id, event_data)"+
+				" VALUES ($1, $2, $3, $4, $5, $6)"+
 				" ON CONFLICT DO NOTHING",
-			event.GetTime().UTC(), eventID, event.GetType(), sessionID, eventJSON,
+			event.GetTime().UTC(), eventID, event.GetType(), sessionID, originalSID, eventJSON,
 		)
 		return struct{}{}, trace.Wrap(err)
 	})
@@ -439,7 +456,7 @@ func (l *Log) searchEvents(
 		}
 	}
 
-	sessionUUID := l.deriveSessionID(ctx, sessionID)
+	sessionUUID, _ := l.deriveSessionID(ctx, sessionID)
 
 	var qb strings.Builder
 	qb.WriteString("DECLARE cur CURSOR FOR SELECT" +
@@ -594,14 +611,14 @@ func (l *Log) SearchSessionEvents(ctx context.Context, req events.SearchSessionE
 // an UUID from session IDs. See [Log.deriveSessionID].
 var sessionIDBase = uuid.MustParse("e481e221-77b0-4b9e-be98-bc2e486b751b")
 
-func (l *Log) deriveSessionID(ctx context.Context, sessionID string) uuid.UUID {
+func (l *Log) deriveSessionID(ctx context.Context, sessionID string) (u uuid.UUID, derived bool) {
 	if sessionID == "" {
-		return uuid.Nil // return zero UUID for backwards compat
+		return uuid.Nil, false // return zero UUID for backwards compat
 	}
 
 	u, err := uuid.Parse(sessionID)
 	if err == nil {
-		return u
+		return u, false
 	}
 
 	// Some session IDs aren't UUIDs. For example, App session IDs are 32-byte
@@ -617,12 +634,12 @@ func (l *Log) deriveSessionID(ctx context.Context, sessionID string) uuid.UUID {
 	// derived.
 	//
 	// * https://github.com/gravitational/teleport/blob/63537e3da5a22b61d9218863f1ed535a31d229ea/lib/auth/sessions.go#L521
-	derived := uuid.NewSHA1(sessionIDBase, []byte(sessionID))
+	u = uuid.NewSHA1(sessionIDBase, []byte(sessionID))
 
 	l.log.DebugContext(ctx,
 		"Failed to parse event session ID, using derived ID",
 		"error", err,
-		"derived_id", derived,
+		"derived_id", u,
 	)
-	return derived
+	return u, true
 }
