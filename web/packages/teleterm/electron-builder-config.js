@@ -178,6 +178,10 @@ module.exports = {
         from: env.CONNECT_TSH_BIN_PATH,
         to: './bin/tsh.exe',
       },
+      env.CONNECT_WINTUN_DLL_PATH && {
+        from: env.CONNECT_WINTUN_DLL_PATH,
+        to: './bin/wintun.dll',
+      },
     ].filter(Boolean),
   },
   nsis: {
