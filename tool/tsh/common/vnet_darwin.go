@@ -90,6 +90,11 @@ func newPlatformVnetServiceCommand(app *kingpin.Application) vnetCommandNotSuppo
 	return vnetCommandNotSupported{}
 }
 
+// the vnet-install-service command is only supported on windows.
+func newPlatformVnetInstallServiceCommand(app *kingpin.Application) vnetCommandNotSupported {
+	return vnetCommandNotSupported{}
+}
+
 func runVnetDiagnostics(ctx context.Context, nsi vnet.NetworkStackInfo) error {
 	fmt.Println("Running diagnostics.")
 	conflictingRoutesDiag, err := diag.NewRouteConflictDiag(&diag.RouteConflictConfig{

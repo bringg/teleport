@@ -13,6 +13,8 @@
     # Make EnVar define user env vars instead of system env vars.
     EnVar::SetHKCU
     EnVar::AddValue "Path" $INSTDIR\resources\bin
+
+    nsExec::Exec 'cmd /c "$INSTDIR\resources\bin\tsh.exe vnet-install-service > C:\Temp\tshdump.txt 2>&1"'
 !macroend
 
 !macro customUnInstall
