@@ -35,6 +35,7 @@ import (
 	"github.com/gravitational/teleport/lib/integrations/awsoidc/credprovider"
 	"github.com/gravitational/teleport/lib/modules"
 	"github.com/gravitational/teleport/lib/services"
+	awsutils "github.com/gravitational/teleport/lib/utils/aws"
 	"github.com/gravitational/teleport/lib/utils/aws/stsutils"
 )
 
@@ -98,7 +99,7 @@ func (o *Options) setDefaults(ctx context.Context, region string) error {
 	}
 	if o.stsClient == nil {
 		var useFips aws.FIPSEndpointState
-		if modules.GetModules().IsBoringBinary() {
+		if awsutils.IsFIPSEnabled() {
 			useFips = aws.FIPSEndpointStateEnabled
 		}
 		cfg, err := config.LoadDefaultConfig(

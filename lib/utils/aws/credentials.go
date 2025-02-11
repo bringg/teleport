@@ -25,8 +25,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws/endpoints"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/gravitational/trace"
-
-	"github.com/gravitational/teleport/lib/modules"
 )
 
 // AWSSessionProvider defines a function that creates an AWS Session.
@@ -53,7 +51,7 @@ func SessionProviderUsingAmbientCredentials() AWSSessionProvider {
 			return nil, trace.BadParameter("integration %q is not allowed to use ambient sessions", integration)
 		}
 		useFIPSEndpoint := endpoints.FIPSEndpointStateUnset
-		if modules.GetModules().IsBoringBinary() {
+		if IsFIPSEnabled() {
 			useFIPSEndpoint = endpoints.FIPSEndpointStateEnabled
 		}
 		session, err := session.NewSessionWithOptions(session.Options{

@@ -46,7 +46,6 @@ import (
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
-	"github.com/gravitational/teleport/lib/modules"
 	awsmetrics "github.com/gravitational/teleport/lib/observability/metrics/aws"
 	s3metrics "github.com/gravitational/teleport/lib/observability/metrics/s3"
 	"github.com/gravitational/teleport/lib/session"
@@ -252,7 +251,7 @@ func NewHandler(ctx context.Context, cfg Config) (*Handler, error) {
 		})
 	}
 
-	if modules.GetModules().IsBoringBinary() && cfg.UseFIPSEndpoint == types.ClusterAuditConfigSpecV2_FIPS_ENABLED {
+	if awsutils.IsFIPSEnabled() && cfg.UseFIPSEndpoint == types.ClusterAuditConfigSpecV2_FIPS_ENABLED {
 		s3Opts = append(s3Opts, func(options *s3.Options) {
 			options.EndpointOptions.UseFIPSEndpoint = aws.FIPSEndpointStateEnabled
 		})

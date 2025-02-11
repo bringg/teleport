@@ -30,7 +30,7 @@ import (
 
 	"github.com/gravitational/teleport/api/types"
 	utilsaws "github.com/gravitational/teleport/api/utils/aws"
-	"github.com/gravitational/teleport/lib/modules"
+	awsutils "github.com/gravitational/teleport/lib/utils/aws"
 	"github.com/gravitational/teleport/lib/utils/aws/stsutils"
 )
 
@@ -67,7 +67,7 @@ func NewSessionV1(ctx context.Context, client IntegrationTokenGenerator, region 
 	}
 
 	useFIPSEndpoint := endpoints.FIPSEndpointStateUnset
-	if modules.GetModules().IsBoringBinary() {
+	if awsutils.IsFIPSEnabled() {
 		useFIPSEndpoint = endpoints.FIPSEndpointStateEnabled
 	}
 

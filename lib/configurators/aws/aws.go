@@ -45,7 +45,6 @@ import (
 	awsimds "github.com/gravitational/teleport/lib/cloud/imds/aws"
 	"github.com/gravitational/teleport/lib/configurators"
 	"github.com/gravitational/teleport/lib/defaults"
-	"github.com/gravitational/teleport/lib/modules"
 	"github.com/gravitational/teleport/lib/service/servicecfg"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/srv/db/secrets"
@@ -366,7 +365,7 @@ func (c *ConfiguratorConfig) CheckAndSetDefaults() error {
 	}
 
 	useFIPSEndpoint := aws.FIPSEndpointStateUnset
-	if modules.GetModules().IsBoringBinary() {
+	if awsutils.IsFIPSEnabled() {
 		useFIPSEndpoint = aws.FIPSEndpointStateEnabled
 	}
 

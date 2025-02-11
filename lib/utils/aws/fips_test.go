@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-package dynamodbutils_test
+package aws_test
 
 import (
 	"testing"
@@ -22,7 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/gravitational/teleport/lib/modules"
-	"github.com/gravitational/teleport/lib/utils/aws/dynamodbutils"
+	awsutils "github.com/gravitational/teleport/lib/utils/aws"
 )
 
 func TestIsFIPSEnabled(t *testing.T) {
@@ -58,7 +58,7 @@ func TestIsFIPSEnabled(t *testing.T) {
 				FIPS: test.fips,
 			})
 
-			got := dynamodbutils.IsFIPSEnabled()
+			got := awsutils.IsFIPSEnabled()
 			assert.Equal(t, test.want, got, "IsFIPSEnabled mismatch")
 		})
 	}

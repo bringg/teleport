@@ -17,7 +17,6 @@
 package dynamodbutils
 
 import (
-	"github.com/gravitational/teleport/lib/modules"
 	awsutils "github.com/gravitational/teleport/lib/utils/aws"
 )
 
@@ -26,5 +25,5 @@ import (
 // and if FIPS is not disabled by the environment
 // ([awsutils.IsFIPSDisabledByEnv]).
 func IsFIPSEnabled() bool {
-	return !awsutils.IsFIPSDisabledByEnv() && modules.GetModules().IsBoringBinary()
+	return awsutils.IsFIPSEnabled()
 }

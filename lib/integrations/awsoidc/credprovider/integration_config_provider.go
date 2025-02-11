@@ -29,7 +29,7 @@ import (
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/types"
-	"github.com/gravitational/teleport/lib/modules"
+	awsutils "github.com/gravitational/teleport/lib/utils/aws"
 	"github.com/gravitational/teleport/lib/utils/aws/stsutils"
 )
 
@@ -149,7 +149,7 @@ func newAWSCredCache(ctx context.Context, cfg Config, stsClient stscreds.AssumeR
 
 func newAWSConfig(ctx context.Context, awsRegion string, options ...func(*awsConfig.LoadOptions) error) (*aws.Config, error) {
 	var useFIPS aws.FIPSEndpointState
-	if modules.GetModules().IsBoringBinary() {
+	if awsutils.IsFIPSEnabled() {
 		useFIPS = aws.FIPSEndpointStateEnabled
 	}
 	options = append(options,

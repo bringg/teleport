@@ -30,7 +30,7 @@ import (
 	awslib "github.com/gravitational/teleport/lib/cloud/aws"
 	"github.com/gravitational/teleport/lib/cloud/provisioning"
 	"github.com/gravitational/teleport/lib/cloud/provisioning/awsactions"
-	"github.com/gravitational/teleport/lib/modules"
+	awsutils "github.com/gravitational/teleport/lib/utils/aws"
 	"github.com/gravitational/teleport/lib/utils/aws/iamutils"
 	"github.com/gravitational/teleport/lib/utils/aws/stsutils"
 )
@@ -93,7 +93,7 @@ type defaultAWSAppAccessConfigureClient struct {
 func NewAWSAppAccessConfigureClient(ctx context.Context) (AWSAppAccessConfigureClient, error) {
 	var configOptions []func(*config.LoadOptions) error
 
-	if modules.GetModules().IsBoringBinary() {
+	if awsutils.IsFIPSEnabled() {
 		configOptions = append(configOptions, config.WithUseFIPSEndpoint(aws.FIPSEndpointStateEnabled))
 	}
 

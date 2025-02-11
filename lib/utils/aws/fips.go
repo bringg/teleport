@@ -19,7 +19,15 @@ package aws
 import (
 	"os"
 	"strconv"
+
+	"github.com/gravitational/teleport/lib/modules"
 )
+
+// IsFIPSEnabled combines [IsFIPSDisabledByEnv] and
+// [modules.Modules.IsBoringBinary].
+func IsFIPSEnabled() bool {
+	return !IsFIPSDisabledByEnv() && modules.GetModules().IsBoringBinary()
+}
 
 // IsFIPSDisabledByEnv returns true if the TELEPORT_UNSTABLE_DISABLE_AWS_FIPS
 // environment variable is set.
@@ -28,7 +36,7 @@ import (
 // considered true.
 //
 // Prefer using specific functions, such as those in lib/utils/aws/*
-// subpackages.
+// subpackages or [IsFIPSEnabled].
 func IsFIPSDisabledByEnv() bool {
 	const envVar = "TELEPORT_UNSTABLE_DISABLE_AWS_FIPS"
 

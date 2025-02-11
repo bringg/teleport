@@ -33,7 +33,7 @@ import (
 	"go.opentelemetry.io/otel"
 
 	"github.com/gravitational/teleport/api/types"
-	"github.com/gravitational/teleport/lib/modules"
+	awsutils "github.com/gravitational/teleport/lib/utils/aws"
 	"github.com/gravitational/teleport/lib/utils/aws/stsutils"
 )
 
@@ -260,7 +260,7 @@ func buildConfigOptions(region string, cred aws.CredentialsProvider, opts *optio
 		config.WithCredentialsProvider(cred),
 		config.WithCredentialsCacheOptions(awsCredentialsCacheOptions),
 	}
-	if modules.GetModules().IsBoringBinary() {
+	if awsutils.IsFIPSEnabled() {
 		configOpts = append(configOpts, config.WithUseFIPSEndpoint(aws.FIPSEndpointStateEnabled))
 	}
 	if opts.customRetryer != nil {
