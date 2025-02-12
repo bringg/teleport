@@ -49,7 +49,7 @@ func InstallService(ctx context.Context, username, logFile string) (err error) {
 		if err != nil {
 			// Not really any point checking the error from WriteFile since
 			// noone will be able to read it.
-			os.WriteFile(logFile, []byte(trace.DebugReport(err)), 0)
+			os.WriteFile(logFile, []byte(err.Error()), 0)
 		}
 	}()
 
@@ -61,11 +61,11 @@ func InstallService(ctx context.Context, username, logFile string) (err error) {
 		return trace.Wrap(err, "looking up user %s", username)
 	}
 
-	tshExePath, err := os.Executable()
+	currentTshPath, err := os.Executable()
 	if err != nil {
 		return trace.Wrap(err, "getting current exe path")
 	}
-	wintunPath, err := currentWintunPath(tshExePath)
+	currentWintunPath, err := wintunPath(currentTshPath)
 	if err != nil {
 		return trace.Wrap(err, "getting current wintun.dll path")
 	}
@@ -75,10 +75,77 @@ func InstallService(ctx context.Context, username, logFile string) (err error) {
 		return trace.Wrap(err, "connecting to Windows service manager")
 	}
 
-	return trace.NotImplemented("InstallService is not fully implemented. %v %v %v", u.Uid, wintunPath, svcMgr)
+	serviceName := "TeleportVNet-" + username
+	serviceInstallDir := filepath.Join("C:", "Program Files", serviceName)
+	targetTshPath := filepath.Join(serviceInstallDir, "tsh.exe")
+	targetWintunPath := filepath.Join(serviceInstallDir, "wintun.dll")
+	if err := os.Mkdir(serviceInstallDir, 0600); err != nil {
+		return trace.Wrap(err, "creating service installation directory %s", serviceInstallDir)
+	}
+	if err := copyFile(targetTshPath, currentTshPath); err != nil {
+		return trace.Wrap(err, "copying tsh.exe to service installation directory")
+	}
+	if err := copyFile(targetWintunPath, currentWintunPath); err != nil {
+		return trace.Wrap(err, "copying wintun.dll to service installation directory")
+	}
+
+	if _, err := svcMgr.CreateService(serviceName, targetTshPath, mgr.Config{
+		StartType: mgr.StartManual,
+	}); err != nil {
+		return trace.Wrap(err, "creating VNet Windows service")
+	}
+	// Uid is documented to be the user's SID on Windows.
+	userSID := u.Uid
+	if err := grantServiceRights(serviceName, userSID); err != nil {
+		return trace.Wrap(err, "granting %s permissions to control the VNet Windows service", username)
+	}
+	return nil
 }
 
-func currentWintunPath(tshPath string) (string, error) {
+func grantServiceRights(serviceName, userSID string) error {
+	// Get the current security info for the service, requesting only the DACL
+	// (discretionary access control list).
+	si, err := windows.GetNamedSecurityInfo(serviceName, windows.SE_SERVICE, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return trace.Wrap(err, "getting current service security information")
+	}
+	// Get the DACL from the security info.
+	dacl, _ /*defaulted*/, err := si.DACL()
+	if err != nil {
+		return trace.Wrap(err, "getting current service DACL")
+	}
+	// Build an explicit access entry allowing our user to start, stop, and
+	// query the service.
+	ea := []windows.EXPLICIT_ACCESS{{
+		AccessPermissions: windows.SERVICE_QUERY_STATUS | windows.SERVICE_START | windows.SERVICE_STOP,
+		AccessMode:        windows.GRANT_ACCESS,
+		Trustee: windows.TRUSTEE{
+			TrusteeForm:  windows.TRUSTEE_IS_SID,
+			TrusteeType:  windows.TRUSTEE_IS_USER,
+			TrusteeValue: windows.TrusteeValueFromString(userSID),
+		},
+	}}
+	// Merge the new explicit access entry with the existing DACL.
+	dacl, err = windows.ACLFromEntries(ea, dacl)
+	if err != nil {
+		return trace.Wrap(err, "merging service DACL entries")
+	}
+	// Set the DACL on the service security info.
+	if err := windows.SetNamedSecurityInfo(
+		serviceName,
+		windows.SE_SERVICE,
+		windows.DACL_SECURITY_INFORMATION,
+		nil,  // owner
+		nil,  // group
+		dacl, // dacl
+		nil,  // sacl
+	); err != nil {
+		return trace.Wrap(err, "setting service DACL")
+	}
+	return nil
+}
+
+func wintunPath(tshPath string) (string, error) {
 	dir := filepath.Dir(tshPath)
 	wintunPath := filepath.Join(dir, "wintun.dll")
 	if _, err := os.Stat(wintunPath); err != nil {
@@ -89,6 +156,23 @@ func currentWintunPath(tshPath string) (string, error) {
 		}
 	}
 	return wintunPath, nil
+}
+
+func copyFile(dstPath, srcPath string) error {
+	srcFile, err := os.Open(srcPath)
+	if err != nil {
+		return trace.Wrap(err, "opening %s for reading", srcPath)
+	}
+	defer srcFile.Close()
+	dstFile, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return trace.Wrap(err, "opening %s for writing", dstPath)
+	}
+	defer dstFile.Close()
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return trace.Wrap(err, "copying %s to %s", srcPath, dstPath)
+	}
+	return nil
 }
 
 // installServiceInElevatedChild uses `runas` to trigger a child process
