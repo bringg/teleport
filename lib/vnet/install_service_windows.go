@@ -18,8 +18,9 @@ package vnet
 
 import (
 	"context"
-	"fmt"
 	"os"
+	"os/user"
+	"path/filepath"
 	"time"
 
 	"github.com/gravitational/trace"
@@ -30,32 +31,63 @@ import (
 )
 
 // InstallService installs the VNet windows service.
-func InstallService(ctx context.Context) (err error) {
+func InstallService(ctx context.Context, username string) (err error) {
+	// If not already running with elevated permissions, exec a child process of
+	// the current executable with the current args with `runas`.
 	if !windows.GetCurrentProcessToken().IsElevated() {
-		return trace.Wrap(installServiceInElevatedChild(ctx),
+		return trace.Wrap(installServiceInElevatedChild(ctx, username),
 			"elevating process to install VNet Windows service")
 	}
 
-	defer func() {
-		msg := "connected to service manager"
-		if err != nil {
-			msg = err.Error()
-		}
-		os.WriteFile(`C:\Temp\installdump.exe`, []byte(msg), 0)
-	}()
+	if username == "" {
+		return trace.BadParameter("username is required")
+	}
+	u, err := user.Lookup(username)
+	if err != nil {
+		return trace.Wrap(err, "looking up user %s", username)
+	}
+
+	tshExePath, err := os.Executable()
+	if err != nil {
+		return trace.Wrap(err, "getting current exe path")
+	}
+	wintunPath, err := currentWintunPath(tshExePath)
+	if err != nil {
+		return trace.Wrap(err, "getting current wintun.dll path")
+	}
 
 	svcMgr, err := mgr.Connect()
 	if err != nil {
 		return trace.Wrap(err, "connecting to Windows service manager")
 	}
-	fmt.Println("succesfully connected to Windows service manager", svcMgr)
-	return nil
+
+	return trace.NotImplemented("InstallService is not fully implemented. %s %s", u.Uid, wintunPath, svcMgr)
+}
+
+func currentWintunPath(tshPath string) (string, error) {
+	dir := filepath.Dir(tshPath)
+	wintunPath := filepath.Join(dir, "wintun.dll")
+	if _, err := os.Stat(wintunPath); err != nil {
+		if os.IsNotExist(err) {
+			return "", trace.Wrap(err, "wintun.dll not found")
+		} else {
+			return "", trace.Wrap(err, "checking for existence of wintun.dll")
+		}
+	}
+	return wintunPath, nil
 }
 
 // installServiceInElevatedChild uses `runas` to trigger a child process
 // with elevated privileges. This is necessary in order to install the service
 // with the service control manager.
-func installServiceInElevatedChild(ctx context.Context) error {
+func installServiceInElevatedChild(ctx context.Context, username string) error {
+	if username == "" {
+		u, err := user.Current()
+		if err != nil {
+			return trace.Wrap(err, "looking up current user")
+		}
+		username = u.Username
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return trace.Wrap(err, "determining current executable path")

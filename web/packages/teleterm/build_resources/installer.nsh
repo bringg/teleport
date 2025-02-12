@@ -14,7 +14,14 @@
     EnVar::SetHKCU
     EnVar::AddValue "Path" $INSTDIR\resources\bin
 
-    nsExec::Exec 'cmd /c "$INSTDIR\resources\bin\tsh.exe vnet-install-service > C:\Temp\tshdump.txt 2>&1"'
+    nsExec::ExecToStack '"$INSTDIR\resources\bin\tsh.exe" vnet-install-service'
+    Pop $ExitCode
+    Pop $Output
+    ${If} $ExitCode != 0
+        MessageBox MB_OK|MB_ICONSTOP \
+            "tsh.exe vnet-install-service failed with exit code $ExitCode.\nOutput:\n$Output"
+        Abort
+    ${Endif}
 !macroend
 
 !macro customUnInstall
