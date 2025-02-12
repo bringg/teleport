@@ -37,7 +37,7 @@ func InstallService(ctx context.Context, username, logFile string) (err error) {
 	// If not already running with elevated permissions, exec a child process of
 	// the current executable with the current args with `runas`.
 	if !windows.GetCurrentProcessToken().IsElevated() {
-		return trace.Wrap(installServiceInElevatedChild(ctx, username),
+		return trace.Wrap(installServiceInElevatedChild(ctx),
 			"elevating process to install VNet Windows service")
 	}
 
@@ -178,13 +178,10 @@ func copyFile(dstPath, srcPath string) error {
 // installServiceInElevatedChild uses `runas` to trigger a child process
 // with elevated privileges. This is necessary in order to install the service
 // with the service control manager.
-func installServiceInElevatedChild(ctx context.Context, username string) error {
-	if username == "" {
-		u, err := user.Current()
-		if err != nil {
-			return trace.Wrap(err, "looking up current user")
-		}
-		username = u.Username
+func installServiceInElevatedChild(ctx context.Context) error {
+	username, _, err := currentUsernameAndSID()
+	if err != nil {
+		return trace.Wrap(err)
 	}
 	exe, err := os.Executable()
 	if err != nil {
