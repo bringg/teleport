@@ -15,12 +15,12 @@
     EnVar::AddValue "Path" $INSTDIR\resources\bin
 
     nsExec::ExecToStack '"$INSTDIR\resources\bin\tsh.exe" vnet-install-service'
-    Pop $ExitCode
-    Pop $Output
-    ${If} $ExitCode != 0
-        MessageBox MB_OK|MB_ICONSTOP \
-            "tsh.exe vnet-install-service failed with exit code $ExitCode.\nOutput:\n$Output"
-        Abort
+    Pop $0 # ExitCode
+    Pop $1 # Output
+    ${If} $0 != 0
+        MessageBox MB_ICONSTOP \
+            "tsh.exe vnet-install-service failed with exit code $0. Output: $1"
+        Quit
     ${Endif}
 !macroend
 
