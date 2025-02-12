@@ -56,6 +56,7 @@ func isWindowsService() bool {
 type vnetInstallServiceCommand struct {
 	*kingpin.CmdClause
 	username string
+	logFile  string
 }
 
 func newPlatformVnetInstallServiceCommand(app *kingpin.Application) *vnetInstallServiceCommand {
@@ -63,11 +64,12 @@ func newPlatformVnetInstallServiceCommand(app *kingpin.Application) *vnetInstall
 		CmdClause: app.Command("vnet-install-service", "Install the VNet Windows service.").Hidden(),
 	}
 	cmd.Flag("username", "User to install the service for.").StringVar(&cmd.username)
+	cmd.Flag("log-file", "File to write error logs to.").StringVar(&cmd.logFile)
 	return cmd
 }
 
 func (c *vnetInstallServiceCommand) run(cf *CLIConf) error {
-	return trace.Wrap(vnet.InstallService(cf.Context, c.username), "installing Windows service")
+	return trace.Wrap(vnet.InstallService(cf.Context, c.username, c.logFile), "installing Windows service")
 }
 
 // the admin-setup command is only supported on darwin.
