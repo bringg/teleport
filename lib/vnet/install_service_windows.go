@@ -18,8 +18,10 @@ package vnet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -76,11 +78,13 @@ func InstallService(ctx context.Context, username, logFile string) (err error) {
 	}
 
 	serviceName := "TeleportVNet-" + username
-	serviceInstallDir := filepath.Join("C:", "Program Files", serviceName)
+	serviceInstallDir := filepath.Join(`C:\`, "Program Files", serviceName)
 	targetTshPath := filepath.Join(serviceInstallDir, "tsh.exe")
 	targetWintunPath := filepath.Join(serviceInstallDir, "wintun.dll")
 	if err := os.Mkdir(serviceInstallDir, 0600); err != nil {
-		return trace.Wrap(err, "creating service installation directory %s", serviceInstallDir)
+		if !errors.Is(err, fs.ErrExist) {
+			return trace.Wrap(err, "creating service installation directory %s", serviceInstallDir)
+		}
 	}
 	if err := copyFile(targetTshPath, currentTshPath); err != nil {
 		return trace.Wrap(err, "copying tsh.exe to service installation directory")
@@ -89,20 +93,39 @@ func InstallService(ctx context.Context, username, logFile string) (err error) {
 		return trace.Wrap(err, "copying wintun.dll to service installation directory")
 	}
 
-	if _, err := svcMgr.CreateService(serviceName, targetTshPath, mgr.Config{
-		StartType: mgr.StartManual,
-	}); err != nil {
+	if existingSvc, err := svcMgr.OpenService(serviceName); err == nil {
+		// The service already exists, delete it and recreate.
+		if err := existingSvc.Delete(); err != nil {
+			return trace.Wrap(err, "deleting existing service %s", serviceName)
+		}
+		existingSvc.Close()
+		// The above marks the service for deletion asynchronously,
+		// wait for it to actually be deleted.
+		existingSvc, err = svcMgr.OpenService(serviceName)
+		for err == nil {
+			existingSvc.Close()
+			fmt.Println("Waiting for existing service to be deleted...")
+			time.Sleep(time.Second)
+			existingSvc, err = svcMgr.OpenService(serviceName)
+		}
+	}
+	if _, err := svcMgr.CreateService(
+		serviceName,
+		targetTshPath,
+		mgr.Config{
+			StartType: mgr.StartManual,
+		},
+		"vnet-service",
+	); err != nil {
 		return trace.Wrap(err, "creating VNet Windows service")
 	}
-	// Uid is documented to be the user's SID on Windows.
-	userSID := u.Uid
-	if err := grantServiceRights(serviceName, userSID); err != nil {
+	if err := grantServiceRights(serviceName, u.Username); err != nil {
 		return trace.Wrap(err, "granting %s permissions to control the VNet Windows service", username)
 	}
 	return nil
 }
 
-func grantServiceRights(serviceName, userSID string) error {
+func grantServiceRights(serviceName, username string) error {
 	// Get the current security info for the service, requesting only the DACL
 	// (discretionary access control list).
 	si, err := windows.GetNamedSecurityInfo(serviceName, windows.SE_SERVICE, windows.DACL_SECURITY_INFORMATION)
@@ -120,9 +143,9 @@ func grantServiceRights(serviceName, userSID string) error {
 		AccessPermissions: windows.SERVICE_QUERY_STATUS | windows.SERVICE_START | windows.SERVICE_STOP,
 		AccessMode:        windows.GRANT_ACCESS,
 		Trustee: windows.TRUSTEE{
-			TrusteeForm:  windows.TRUSTEE_IS_SID,
+			TrusteeForm:  windows.TRUSTEE_IS_NAME,
 			TrusteeType:  windows.TRUSTEE_IS_USER,
-			TrusteeValue: windows.TrusteeValueFromString(userSID),
+			TrusteeValue: windows.TrusteeValueFromString(username),
 		},
 	}}
 	// Merge the new explicit access entry with the existing DACL.

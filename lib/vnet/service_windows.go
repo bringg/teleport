@@ -108,7 +108,7 @@ func ServiceMain() error {
 	if err := setupServiceLogger(); err != nil {
 		return trace.Wrap(err, "setting up logger for service")
 	}
-	if err := svc.Run("TeleportVNet", &windowsService{}); err != nil {
+	if err := svc.Run("TeleportVNet-Nic", &windowsService{}); err != nil {
 		return trace.Wrap(err, "running Windows service")
 	}
 	return nil
