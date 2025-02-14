@@ -63,6 +63,9 @@ func newPlatformVnetInstallServiceCommand(app *kingpin.Application) *vnetInstall
 	cmd := &vnetInstallServiceCommand{
 		CmdClause: app.Command("vnet-install-service", "Install the VNet Windows service.").Hidden(),
 	}
+	// These args should not be set manually when the command is called by a
+	// user or the installer, they are used when the command re-executes itself
+	// with admin rights.
 	cmd.Flag("username", "User to install the service for.").StringVar(&cmd.username)
 	cmd.Flag("log-file", "File to write error logs to.").StringVar(&cmd.logFile)
 	return cmd
@@ -70,6 +73,28 @@ func newPlatformVnetInstallServiceCommand(app *kingpin.Application) *vnetInstall
 
 func (c *vnetInstallServiceCommand) run(cf *CLIConf) error {
 	return trace.Wrap(vnet.InstallService(cf.Context, c.username, c.logFile), "installing Windows service")
+}
+
+type vnetUninstallServiceCommand struct {
+	*kingpin.CmdClause
+	username string
+	logFile  string
+}
+
+func newPlatformVnetUninstallServiceCommand(app *kingpin.Application) *vnetUninstallServiceCommand {
+	cmd := &vnetUninstallServiceCommand{
+		CmdClause: app.Command("vnet-uninstall-service", "Uninstall the VNet Windows service.").Hidden(),
+	}
+	// These args should not be set manually when the command is called by a
+	// user or the installer, they are used when the command re-executes itself
+	// with admin rights.
+	cmd.Flag("username", "User to uninstall the service for.").StringVar(&cmd.username)
+	cmd.Flag("log-file", "File to write error logs to.").StringVar(&cmd.logFile)
+	return cmd
+}
+
+func (c *vnetUninstallServiceCommand) run(cf *CLIConf) error {
+	return trace.Wrap(vnet.UninstallService(cf.Context, c.username, c.logFile), "uninstalling Windows service")
 }
 
 // the admin-setup command is only supported on darwin.

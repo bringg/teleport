@@ -43,6 +43,10 @@ func newPlatformVnetInstallServiceCommand(app *kingpin.Application) vnetCommandN
 	return vnetCommandNotSupported{}
 }
 
+func newPlatformVnetUninstallServiceCommand(app *kingpin.Application) vnetCommandNotSupported {
+	return vnetCommandNotSupported{}
+}
+
 //nolint:staticcheck // SA4023. runVnetDiagnostics on unsupported platforms always returns err.
 func runVnetDiagnostics(ctx context.Context, nsi vnet.NetworkStackInfo) error {
 	return trace.NotImplemented("diagnostics are not implemented yet on this platform")

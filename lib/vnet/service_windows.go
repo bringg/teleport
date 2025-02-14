@@ -37,7 +37,7 @@ const (
 	serviceAccessFlags = windows.SERVICE_START | windows.SERVICE_STOP | windows.SERVICE_QUERY_STATUS
 )
 
-func serviceName(username string) string {
+func userServiceName(username string) string {
 	return "TeleportVNet-" + username
 }
 
@@ -80,7 +80,7 @@ func startService(ctx context.Context, cfg *windowsAdminProcessConfig) (*mgr.Ser
 		return nil, trace.Wrap(err, "opening Windows service manager")
 	}
 	defer windows.CloseServiceHandle(scManager)
-	svcName := serviceName(cfg.username)
+	svcName := userServiceName(cfg.username)
 	svcNamePtr, err := syscall.UTF16PtrFromString(svcName)
 	if err != nil {
 		return nil, trace.Wrap(err, "converting service name to UTF16")
@@ -108,7 +108,7 @@ func ServiceMain() error {
 	if err := setupServiceLogger(); err != nil {
 		return trace.Wrap(err, "setting up logger for service")
 	}
-	if err := svc.Run("TeleportVNet-Nic", &windowsService{}); err != nil {
+	if err := svc.Run("TeleportVNet", &windowsService{}); err != nil {
 		return trace.Wrap(err, "running Windows service")
 	}
 	return nil

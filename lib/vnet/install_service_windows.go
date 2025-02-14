@@ -35,11 +35,16 @@ import (
 )
 
 // InstallService installs the VNet windows service.
+//
+// Windows services are installed by the service manager, which takes a path to
+// the service executable. So that regular users are not able to overwrite the
+// executable at that path, we use a path under C:\Program Files\, which is not
+// writable by regular users by default.
 func InstallService(ctx context.Context, username, logFile string) (err error) {
 	// If not already running with elevated permissions, exec a child process of
 	// the current executable with the current args with `runas`.
 	if !windows.GetCurrentProcessToken().IsElevated() {
-		return trace.Wrap(installServiceInElevatedChild(ctx),
+		return trace.Wrap(elevateChildProcess(ctx),
 			"elevating process to install VNet Windows service")
 	}
 
@@ -77,8 +82,7 @@ func InstallService(ctx context.Context, username, logFile string) (err error) {
 		return trace.Wrap(err, "connecting to Windows service manager")
 	}
 
-	serviceName := "TeleportVNet-" + username
-	serviceInstallDir := filepath.Join(`C:\`, "Program Files", serviceName)
+	serviceName, serviceInstallDir := serviceNameAndInstallDir(username)
 	targetTshPath := filepath.Join(serviceInstallDir, "tsh.exe")
 	targetWintunPath := filepath.Join(serviceInstallDir, "wintun.dll")
 	if err := os.Mkdir(serviceInstallDir, 0600); err != nil {
@@ -94,7 +98,8 @@ func InstallService(ctx context.Context, username, logFile string) (err error) {
 	}
 
 	if existingSvc, err := svcMgr.OpenService(serviceName); err == nil {
-		// The service already exists, delete it and recreate.
+		// The service already exists, delete it and recreate in case
+		// configuration options have changed since it was originally installed.
 		if err := existingSvc.Delete(); err != nil {
 			return trace.Wrap(err, "deleting existing service %s", serviceName)
 		}
@@ -105,24 +110,80 @@ func InstallService(ctx context.Context, username, logFile string) (err error) {
 		for err == nil {
 			existingSvc.Close()
 			log.InfoContext(ctx, "Waiting for existing service to be deleted...")
-			time.Sleep(time.Second)
+			select {
+			case <-ctx.Done():
+				return trace.Wrap(ctx.Err(), "context canceled while waiting for existing service to be uninstalled")
+			case <-time.After(time.Second):
+			}
 			existingSvc, err = svcMgr.OpenService(serviceName)
 		}
 	}
-	if _, err := svcMgr.CreateService(
+	svc, err := svcMgr.CreateService(
 		serviceName,
 		targetTshPath,
 		mgr.Config{
 			StartType: mgr.StartManual,
 		},
-		"vnet-service",
-	); err != nil {
+		ServiceCommand,
+	)
+	if err != nil {
 		return trace.Wrap(err, "creating VNet Windows service")
 	}
+	svc.Close()
 	if err := grantServiceRights(serviceName, u.Username); err != nil {
 		return trace.Wrap(err, "granting %s permissions to control the VNet Windows service", username)
 	}
 	return nil
+}
+
+// UninstallService uninstalls the VNet windows service.
+func UninstallService(ctx context.Context, username, logFile string) (err error) {
+	// If not already running with elevated permissions, exec a child process of
+	// the current executable with the current args with `runas`.
+	if !windows.GetCurrentProcessToken().IsElevated() {
+		return trace.Wrap(elevateChildProcess(ctx),
+			"elevating process to uninstall VNet Windows service")
+	}
+
+	if logFile == "" {
+		return trace.BadParameter("log-file is required")
+	}
+	defer func() {
+		// Write any errors to logFile so the parent process can read it.
+		if err != nil {
+			// Not really any point checking the error from WriteFile since
+			// noone will be able to read it.
+			os.WriteFile(logFile, []byte(err.Error()), 0)
+		}
+	}()
+
+	if username == "" {
+		return trace.BadParameter("username is required")
+	}
+	serviceName, serviceInstallDir := serviceNameAndInstallDir(username)
+
+	svcMgr, err := mgr.Connect()
+	if err != nil {
+		return trace.Wrap(err, "connecting to Windows service manager")
+	}
+	svc, err := svcMgr.OpenService(serviceName)
+	if err != nil {
+		return trace.Wrap(err, "opening Windows service %s", serviceName)
+	}
+	defer svc.Close()
+	if err := svc.Delete(); err != nil {
+		return trace.Wrap(err, "deleting Windows service %s", serviceName)
+	}
+	if err := os.RemoveAll(serviceInstallDir); err != nil {
+		return trace.Wrap(err, "removing VNet service installation directory %s", serviceInstallDir)
+	}
+	return nil
+}
+
+func serviceNameAndInstallDir(username string) (string, string) {
+	serviceName := userServiceName(username)
+	serviceInstallDir := filepath.Join(`C:\`, "Program Files", serviceName)
+	return serviceName, serviceInstallDir
 }
 
 func grantServiceRights(serviceName, username string) error {
@@ -168,6 +229,8 @@ func grantServiceRights(serviceName, username string) error {
 	return nil
 }
 
+// wintunPath returns the path to wintun.dll which must be in the same directory
+// as tshPath.
 func wintunPath(tshPath string) (string, error) {
 	dir := filepath.Dir(tshPath)
 	wintunPath := filepath.Join(dir, "wintun.dll")
@@ -198,10 +261,10 @@ func copyFile(dstPath, srcPath string) error {
 	return nil
 }
 
-// installServiceInElevatedChild uses `runas` to trigger a child process
-// with elevated privileges. This is necessary in order to install the service
-// with the service control manager.
-func installServiceInElevatedChild(ctx context.Context) error {
+// elevateChildProcess uses `runas` to trigger a child process
+// with elevated privileges. This is necessary in order to install or uninstall
+// the service with the service control manager.
+func elevateChildProcess(ctx context.Context) error {
 	username, _, err := currentUsernameAndSID()
 	if err != nil {
 		return trace.Wrap(err)
@@ -216,14 +279,14 @@ func installServiceInElevatedChild(ctx context.Context) error {
 	}
 	f, err := os.CreateTemp("", "vnet-install-log")
 	if err != nil {
-		return trace.Wrap(err, "creating log file for VNet Windows service installation")
+		return trace.Wrap(err, "creating log file for elevated child process")
 	}
 	defer f.Close()
 	args := append(os.Args[1:],
 		"--username", username,
 		"--log-file", f.Name())
 	if err := windowsexec.RunAsAndWait(exe, cwd, time.Second*10, args); err != nil {
-		err = trace.Wrap(err, "installing VNet Windows service in elevated process")
+		err = trace.Wrap(err, "elevating process to manage VNet Windows service")
 		output, readOutputErr := io.ReadAll(io.LimitReader(f, 1024))
 		if readOutputErr != nil {
 			return trace.NewAggregate(err, trace.Wrap(readOutputErr, "reading elevated process log"))
