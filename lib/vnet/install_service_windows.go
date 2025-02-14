@@ -104,7 +104,7 @@ func InstallService(ctx context.Context, username, logFile string) (err error) {
 		existingSvc, err = svcMgr.OpenService(serviceName)
 		for err == nil {
 			existingSvc.Close()
-			fmt.Println("Waiting for existing service to be deleted...")
+			log.InfoContext(ctx, "Waiting for existing service to be deleted...")
 			time.Sleep(time.Second)
 			existingSvc, err = svcMgr.OpenService(serviceName)
 		}
