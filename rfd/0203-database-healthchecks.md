@@ -42,6 +42,150 @@ Related issues:
 
 ## Details
 
+### UX
+
+The web UI will be updated to leverage database health status information.
+
+Unhealthy databases will be displayed with a warning icon or tooltip icon indicating that the database is unhealthy.
+
+Recall that there may be multiple `db_server` heartbeats for the same database, but the web UI only shows a single resource tile for the database.
+If this is the case, then the tooltip will be shown if any of the heartbeats have an unhealthy `target_health.status`.
+The tooltip content will look like this:
+    
+    m/n Teleport database services proxying access to this database cannot reach the database endpoint.
+    <link to healthcheck/network troubleshooting doc>
+
+    Last error: "(tcp) failed: Operation timed out"
+    Database:
+    - URI: <DB uri>
+    - IP: <resolved IP>
+    - Port: <port>
+    Affected Teleport database services:
+    - Hostname: <hostname>
+      UUID: <uuid>
+    - Hostname: <hostname>
+      UUID: <uuid>
+
+#### User story: AWS RDS database enrollment
+
+A Teleport cluster admin is new to Teleport and would like to enroll an AWS RDS database with Teleport.
+
+- The user logs into Teleport, sees the "Enroll New Resource" button and clicks that.
+- They click on the "RDS PostgreSQL" tile - a guided database enrollment wizard.
+- After selecting an AWS integration, region, and VPC, the user sees the "Enroll RDS Database" page.
+- On the page is a toggle button labeled "Monitor database endpoint health", which is already enabled by default.
+- The user leaves the toggle enabled, selects a database to enroll, and clicks "Next". 
+- On the next page, the user is asked to configure an IAM role, choose AWS subnets and security groups, and finally deploy a Teleport database service in ECS using those settings.
+- The user selects a public subnet and a security group that allows all outbound traffic, then clicks "Deploy".
+
+The page tells the user that it is waiting for the new DB agent to start and join the Teleport cluster:
+
+    Teleport is currently deploying a Database Service.
+    It will take at least a minute for the Database Service to be created and joined to your cluster.
+
+After the new agent joins, the page shows a success message:
+
+    Successfully created and detected your new Database Service.
+    
+The page displays a new message below that:
+
+    Teleport is testing network connectivity between the Database Service and your Database.
+
+After a short time, the page displays a message telling the user that the agent cannot reach the database endpoint:
+
+    The Database Service does not have connectivity to the database.
+    1. Check that the security groups you selected allow outbound TCP traffic from the Teleport Database Service to the database address on port 5432
+    2. Check that the database security groups allow inbound traffic from the Teleport Database Service on port 5432
+    
+    Troubleshooting tips: <link to teleport docs>
+
+- The user realizes that they need to select an additional security group that the database allows inbounds traffic from.
+- They select the additional security group and click "Redeploy".
+
+The page displays the same messages waiting for the deployment to join the Teleport cluster, and then displays this message again: 
+
+    Teleport is testing network connectivity between the Database Service and your Database.
+
+After a few seconds, the page displays a new message:
+
+    The Database Service has established network connectivity with the your Database!
+
+The user is now allowed to proceed with the remaining steps in the enrollment flow.
+
+> [!NOTE]
+> As of writing, one of the post-deployment steps in the enrollment wizard is a "connection tester", which tests a combination of network connectivity, Teleport RBAC, AWS IAM permissions, and RDS IAM config in the database itself.
+> The problem is that if the connection tester finds a network connectivity issue, then the user would have to go back to redeploy the database agent to fix it.
+> Network health checks can be used to ensure that the deployment's network settings are correct before the user moves on from the deployment step.
+> The other failure modes do not depend on the deployment settings, so it makes sense to keep those tests in a separate subsequent step.
+
+#### User story: web UI resource health indicators
+
+Alice has deployed a Teleport database agent and enrolled a PostgreSQL database with health checks enabled and using the default settings.
+
+Some time later, another user reconfigures the database firewall rules to restrict the allowed inbound traffic IP ranges, but they inadvertently block the Teleport database agent from reaching the database over the network.
+
+Alice logs into the web UI and navigates to the resources page. 
+
+Alice sees a tooltip or warning icon on the database she set up earlier.
+
+Alice clicks on the tooltip/icon to see the message:
+
+    1/1 Teleport database services proxying access to this database cannot reach the database endpoint.
+    <link to health check or network troubleshooting doc>
+
+    Last error: "(tcp) failed: Operation timed out"
+    Database:
+    - URI: <DB uri>
+    - IP: <resolved IP>
+    - Port: <port>
+    Affected Teleport database services:
+    - Hostname: <hostname>
+      UUID: <uuid>
+
+Among other suggestions, the documentation includes:
+- check that the database is actually listening on `<port>`
+- check that database inbound TCP traffic is allowed from the agent to `<ip : port>`
+- check that agent outbound TCP traffic is allowed to `<ip : port>`
+
+After checking the linked documentation and some investigation Alice diagnoses that the timeout is caused by the database's firewall dropping packets from the agent's IP, which she resolves by updating the firewall rules.
+
+After a short (<20s) time the threshold is reached and the agent changes its status to `healthy`.
+
+The warning on the resource tile goes away.
+
+Alice checks the health status manually with tctl:
+
+```
+$ tctl get db_server/example
+
+kind: db_server
+metadata:
+  expires: "2025-02-21T02:03:47.398926Z"
+  name: example
+  revision: 43e96231-faaf-43c3-b9b8-15cf91813389
+spec:
+  ...*snip*...
+  host_id: 278be63c-c87e-4d7e-a286-86002c7c45c3
+  hostname: mars.internal
+  target_health:
+    addr: example.com:5432
+    protocol: TCP
+    transition_timestamp: "2025-02-19T01:53:39.144218Z"
+    transition_reason: "healthy threshold reached"
+    status: healthy
+  version: 18.0.0-dev
+version: v3
+```
+
+#### Out of scope
+
+The following ideas were considered, but ultimately cut from the initial implementation of this RFD to reduce its scope:
+
+1. Add a new type of notification routing rule that the auth service can use to send a notification when a target becomes unhealthy, much like the `access_request_routing_rules` added in [RFD 87 - Access request notification routing](./0087-access-request-notification-routing.md).
+2. Automatically create a "user task" in the AWS integration dashboard when an AWS RDS database's health status is unhealthy.
+
+These are both good improvements for monitoring and may be added to this RFD in future work.
+
 ### Health status
 
 Database target health status will be stored in the DB agent's ephemeral `db_server` heartbeat as the `spec.target_health` field.
@@ -336,150 +480,6 @@ The justification for the `healthy` and `unhealthy` status relative ordering sho
 It is perhaps less obvious why `init` should be preferred over `""`.
 By definition, an `init` status represents zero failing checks and zero or more passing health checks, whereas `""` represents no health information at all.
 Therefore, the proxy should prefer `init` over `""` health status.
-
-### UX
-
-The web UI will be updated to leverage database health status information.
-
-Unhealthy databases will be displayed with a warning icon or tooltip icon indicating that the database is unhealthy.
-
-Recall that there may be multiple `db_server` heartbeats for the same database, but the web UI only shows a single resource tile for the database.
-If this is the case, then the tooltip will be shown if any of the heartbeats have an unhealthy `target_health.status`.
-The tooltip content will look like this:
-    
-    m/n Teleport database services proxying access to this database cannot reach the database endpoint.
-    <link to healthcheck/network troubleshooting doc>
-
-    Last error: "(tcp) failed: Operation timed out"
-    Database:
-    - URI: <DB uri>
-    - IP: <resolved IP>
-    - Port: <port>
-    Affected Teleport database services:
-    - Hostname: <hostname>
-      UUID: <uuid>
-    - Hostname: <hostname>
-      UUID: <uuid>
-
-#### Out of scope
-
-The following ideas were considered, but ultimately cut from the initial implementation of this RFD to reduce its scope:
-
-1. Add a new type of notification routing rule that the auth service can use to send a notification when a target becomes unhealthy, much like the `access_request_routing_rules` added in [RFD 87 - Access request notification routing](./0087-access-request-notification-routing.md).
-2. Automatically create a "user task" in the AWS integration dashboard when an AWS RDS database's health status is unhealthy.
-
-These are both good improvements for monitoring and may be added to this RFD in future work.
-
-#### User story: AWS RDS database enrollment
-
-A Teleport cluster admin is new to Teleport and would like to enroll an AWS RDS database with Teleport.
-
-- The user logs into Teleport, sees the "Enroll New Resource" button and clicks that.
-- They click on the "RDS PostgreSQL" tile - a guided database enrollment wizard.
-- After selecting an AWS integration, region, and VPC, the user sees the "Enroll RDS Database" page.
-- On the page is a toggle button labeled "Monitor database endpoint health", which is already enabled by default.
-- The user leaves the toggle enabled, selects a database to enroll, and clicks "Next". 
-- On the next page, the user is asked to configure an IAM role, choose AWS subnets and security groups, and finally deploy a Teleport database service in ECS using those settings.
-- The user selects a public subnet and a security group that allows all outbound traffic, then clicks "Deploy".
-
-The page tells the user that it is waiting for the new DB agent to start and join the Teleport cluster:
-
-    Teleport is currently deploying a Database Service.
-    It will take at least a minute for the Database Service to be created and joined to your cluster.
-
-After the new agent joins, the page shows a success message:
-
-    Successfully created and detected your new Database Service.
-    
-The page displays a new message below that:
-
-    Teleport is testing network connectivity between the Database Service and your Database.
-
-After a short time, the page displays a message telling the user that the agent cannot reach the database endpoint:
-
-    The Database Service does not have connectivity to the database.
-    1. Check that the security groups you selected allow outbound TCP traffic from the Teleport Database Service to the database address on port 5432
-    2. Check that the database security groups allow inbound traffic from the Teleport Database Service on port 5432
-    
-    Troubleshooting tips: <link to teleport docs>
-
-- The user realizes that they need to select an additional security group that the database allows inbounds traffic from.
-- They select the additional security group and click "Redeploy".
-
-The page displays the same messages waiting for the deployment to join the Teleport cluster, and then displays this message again: 
-
-    Teleport is testing network connectivity between the Database Service and your Database.
-
-After a few seconds, the page displays a new message:
-
-    The Database Service has established network connectivity with the your Database!
-
-The user is now allowed to proceed with the remaining steps in the enrollment flow.
-
-> [!NOTE]
-> As of writing, one of the post-deployment steps in the enrollment wizard is a "connection tester", which tests a combination of network connectivity, Teleport RBAC, AWS IAM permissions, and RDS IAM config in the database itself.
-> The problem is that if the connection tester finds a network connectivity issue, then the user would have to go back to redeploy the database agent to fix it.
-> Network health checks can be used to ensure that the deployment's network settings are correct before the user moves on from the deployment step.
-> The other failure modes do not depend on the deployment settings, so it makes sense to keep those tests in a separate subsequent step.
-
-#### User story: web UI resource health indicators
-
-Alice has deployed a Teleport database agent and enrolled a PostgreSQL database with health checks enabled and using the default settings.
-
-Some time later, another user reconfigures the database firewall rules to restrict the allowed inbound traffic IP ranges, but they inadvertently block the Teleport database agent from reaching the database over the network.
-
-Alice logs into the web UI and navigates to the resources page. 
-
-Alice sees a tooltip or warning icon on the database she set up earlier.
-
-Alice clicks on the tooltip/icon to see the message:
-
-    1/1 Teleport database services proxying access to this database cannot reach the database endpoint.
-    <link to health check or network troubleshooting doc>
-
-    Last error: "(tcp) failed: Operation timed out"
-    Database:
-    - URI: <DB uri>
-    - IP: <resolved IP>
-    - Port: <port>
-    Affected Teleport database services:
-    - Hostname: <hostname>
-      UUID: <uuid>
-
-Among other suggestions, the documentation includes:
-- check that the database is actually listening on `<port>`
-- check that database inbound TCP traffic is allowed from the agent to `<ip : port>`
-- check that agent outbound TCP traffic is allowed to `<ip : port>`
-
-After checking the linked documentation and some investigation Alice diagnoses that the timeout is caused by the database's firewall dropping packets from the agent's IP, which she resolves by updating the firewall rules.
-
-After a short (<20s) time the threshold is reached and the agent changes its status to `healthy`.
-
-The warning on the resource tile goes away.
-
-Alice checks the health status manually with tctl:
-
-```
-$ tctl get db_server/example
-
-kind: db_server
-metadata:
-  expires: "2025-02-21T02:03:47.398926Z"
-  name: example
-  revision: 43e96231-faaf-43c3-b9b8-15cf91813389
-spec:
-  ...*snip*...
-  host_id: 278be63c-c87e-4d7e-a286-86002c7c45c3
-  hostname: mars.internal
-  target_health:
-    addr: example.com:5432
-    protocol: TCP
-    transition_timestamp: "2025-02-19T01:53:39.144218Z"
-    transition_reason: "healthy threshold reached"
-    status: healthy
-  version: 18.0.0-dev
-version: v3
-```
 
 ### Security
 
