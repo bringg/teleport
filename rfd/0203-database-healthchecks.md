@@ -87,9 +87,6 @@ Health checks will be an opt-in configurable setting with reasonable defaults.
 Health checks should be opt-in to avoid issues for existing customers who upgrade.
 However, our docs configuration references should have health checks enabled to encourage usage.
 
-Users can change the default health check settings cluster-wide in `cluster_networking_config`.
-The cluster-wide settings will be used unless overridden by health check settings on a specific resource.
-
 #### Configuration settings
 
 Health check will expose the following settings:
@@ -248,32 +245,6 @@ Discovery service matchers can specify health check settings for each database t
           health_check:
             enabled: false # disabled for each DB discovered by this matcher (can be omitted, since this is the default)
 
-#### Global config example
-
-    kind: cluster_networking_config
-    metadata:
-      labels:
-        teleport.dev/origin: config-file
-      name: cluster-networking-config
-      revision: 088012d5-4f2e-4490-b637-00121568e704
-    spec:
-      client_idle_timeout: 0s
-      idle_timeout_message: ""
-      keep_alive_count_max: 3
-      keep_alive_interval: 5m0s
-      proxy_listener_mode: 1
-      session_control_timeout: 0s
-      tunnel_strategy:
-        agent_connection_count: 2
-        type: proxy_peering
-      web_idle_timeout: 0s
-      health_check:
-        enabled: true
-        interval: 30s
-        timeout: 5s
-        healthy_threshold: 3
-        unhealthy_threshold: 2
-    version: v2
 
 ### Agent behavior
 
@@ -288,12 +259,6 @@ When any of the `target_health` fields change, the `db_server` heartbeat will be
 When the database is deregistered from the agent, its health checker will be stopped.
 
 When the database is updated, it will be deregistered and then re-registered, effectively restarting its health checker and health status.
-
-The `cluster_networking_config` is cached by the DB agent. 
-
-When the heartbeat system polls for changes to the `db_server` heartbeat, it will check `cluster_networking_config` and start or stop health checkers as needed.
-If an update to the global health check settings enable health checks for a database, then the `db_server` heartbeat will be updated and announced with an `init` target health status.
-If an update disables health check settings for a database, then the `db_server` heartbeat will be updated and announced with an `""` empty target health status.
 
 ### Health checker behavior
 
