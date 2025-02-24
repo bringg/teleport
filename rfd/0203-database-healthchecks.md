@@ -50,21 +50,35 @@ Unhealthy databases will be displayed with a warning icon or tooltip icon indica
 
 Recall that there may be multiple `db_server` heartbeats for the same database, but the web UI only shows a single resource tile for the database.
 If this is the case, then the tooltip will be shown if any of the heartbeats have an unhealthy `target_health.status`.
-The tooltip content will look like this:
+The tooltip content may look something like this:
     
-    m/n Teleport database services proxying access to this database cannot reach the database endpoint.
+    M out of N Teleport database services proxying access to this database cannot reach the database endpoint.
     <link to healthcheck/network troubleshooting doc>
 
     Last error: "(tcp) failed: Operation timed out"
     Database:
     - URI: <DB uri>
-    - IP: <resolved IP>
-    - Port: <port>
     Affected Teleport database services:
     - Hostname: <hostname>
       UUID: <uuid>
+      Error: <last health check error message>
     - Hostname: <hostname>
       UUID: <uuid>
+      Error: <last health check error message>
+
+Databases with a mix of `healthy` and `""` (unknown) status will also show a tooltip that encourages the user to enable health checks or update to a supported version on all of the agents that proxy the db.
+The tooltip content may look something like this: 
+
+    M out of N Teleport database services proxying access to this database are not running network health checks for the database endpoint.
+    User connections will not be routed through affected Teleport database services as long as other database services report a healthy connection to the database.
+
+    Affected Teleport database services:
+    - Hostname: <hostname>
+      UUID: <uuid>
+      Reason: The database service version v17.1.2 does not support health checks.
+    - Hostname: <hostname>
+      UUID: <uuid>
+      Reason: The database service has disabled health checks for this database.
 
 #### User story: AWS RDS database enrollment
 
