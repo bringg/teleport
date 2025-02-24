@@ -217,7 +217,9 @@ The default healthy threshold is set to a higher value than the unhealthy thresh
 
 #### Discovery config example
 
-Discovery service matchers can specify health check settings for each database that the matcher discovers:
+Discovery service creates `db` objects and db agents can configure custom health check settings in their dynamic resources matchers.
+
+Dynamic resource matcher config overrides `db.spec.health_check` settings.
 
     discovery_service:
       enabled: true
@@ -229,22 +231,25 @@ Discovery service matchers can specify health check settings for each database t
             - "ca-central-1"
           tags:
             "env": "prod"
+
+    db_service:
+      enabled: true
+      resources:
+        - labels:
+            "teleport.dev/origin": "dynamic"
+            "env": "dev"
           health_check:
-            enabled: true # enabled with these settings for each DB discovered by this matcher
+            enabled: false # disable health checks for these databases
+        - labels:
+            "region": "ca-central-1"
+            "teleport.dev/origin": "cloud"
+            "teleport.dev/cloud": "AWS"
+          health_check:
+            enabled: true # enabled with these settings for each DB matched
             healthy_threshold: 1
             unhealthy_threshold: 1
             interval: 30s
             timeout: 5s
-        - types:
-            - "rds"
-          regions:
-            - "us-west-1"
-            - "us-west-2"
-          tags:
-            "env": "dev"
-          health_check:
-            enabled: false # disabled for each DB discovered by this matcher (can be omitted, since this is the default)
-
 
 ### Agent behavior
 
