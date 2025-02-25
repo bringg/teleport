@@ -255,6 +255,8 @@ We should enforce reasonable health check setting restrictions:
 1. A minimum interval (1s), to prevent an unreasonable or pointless rate of connection attempts
 2. A minimum timeout (1s), to give each health check a chance to succeed
 3. The healthy/unhealthy thresholds must be greater than 0
+4. The maximum interval will be 300s
+5. The timeout must be less than or equal to the interval
 
 The defaults we choose should strike a balance between the time to notice a change in connectivity, the rate of connections, and handling unreliable variance of network connectivity.
 
@@ -468,14 +470,13 @@ When a health checker starts, it will set its health status to `init` and immedi
 It will then wait for an interval of time before checking again.
 
 Each health check will block the health checker until it either passes or fails, so if the health check takes some time to return, then the next check will occur less than interval time from the failure, possibly immediately.
-The maximum time is bounded by the health check timeout.
-Thus, if the timeout is greater than the interval, it effectively becomes the interval between checks when connection attempts are timing out.
-For example, (Interval=10s, Timeout=15s):
+The maximum time is bounded by the health check timeout, which is itself bounded to be less than the interval.
+For example, (Interval=10s, Timeout=10s):
 
 1. health checker starts
-2. check times out after 15s - startTime=0s, endTime=15s
-3. check times out after 15s - startTime=15s, endTime=30s
-4. check times out after 15s - startTime=30s, endTime=45s
+2. check times out after 10s - startTime=0s, endTime=10s
+3. check times out after 10s - startTime=10s, endTime=20s
+4. check times out after 10s - startTime=20s, endTime=30s
 
 Health checks will run periodically as long as the database remains registered with the DB agent.
 
