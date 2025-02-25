@@ -97,7 +97,7 @@ The page tells the user that it is waiting for the new DB agent to start and joi
 After the new agent joins, the page shows a success message:
 
     Successfully created and detected your new Database Service.
-    
+
 The page displays a new message below that:
 
     Teleport is testing network connectivity between the Database Service and your Database.
@@ -107,7 +107,7 @@ After a short time, the page displays a message telling the user that the agent 
     The Database Service does not have connectivity to the database.
     1. Check that the security groups you selected allow outbound TCP traffic from the Teleport Database Service to the database address on port 5432
     2. Check that the database security groups allow inbound traffic from the Teleport Database Service on port 5432
-    
+
     Troubleshooting tips: <link to teleport docs>
 
 - The user realizes that they need to select an additional security group that the database allows inbounds traffic from.
@@ -282,7 +282,7 @@ As a brief summary of the health checker behavior:
 4. a single failure during `init` will always go to unhealthy state regardless of the configured unhealthy threshold.
 
 The minimum time to transition out of init is therefore given by:
-   
+
     interval * (threshold-1)
 
 For Teleport, the minimum time init->healthy is 10s and init->unhealthy is roughly 0s.
@@ -290,7 +290,7 @@ For Teleport, the minimum time init->healthy is 10s and init->unhealthy is rough
 The maximum time is given by:
 
     max(interval, timeout) * (healthy_threshold-1) + timeout
-  
+
 The maximum time for both is the same: 15s.
 
 Adding the 5s heartbeat polling period to the max times, we get a max time to broadcast the status change: 20s.
@@ -451,7 +451,7 @@ A health checker manager will be added that manages a mapping from DB name to a 
     	// Spec is the health check configuration to use for the target.
     	Spec types.HealthCheckSpec
     }
-    
+
     // Manager manages health checkers.
     type Manager interface {
     	// AddTarget adds a new target health checker and starts the health checker.
@@ -476,7 +476,6 @@ For example, (Interval=10s, Timeout=15s):
 2. check times out after 15s - startTime=0s, endTime=15s
 3. check times out after 15s - startTime=15s, endTime=30s
 4. check times out after 15s - startTime=30s, endTime=45s
-
 
 Health checks will run periodically as long as the database remains registered with the DB agent.
 
@@ -552,13 +551,13 @@ A new message, HealthCheckSpec, will be added as field named `health_check` in D
       // which a target's health status becomes "unhealthy".
       uint32 UnhealthyThreshold = 5 [(gogoproto.jsontag) = "unhealthy_threshold,omitempty"];
     }
-    
+
 A new message, TargetHealth, will be added as a field named `target_health` in DatabaseServerSpecV3.
-    
+
     // TargetHealth describes the health status of network connectivity between
     // an agent and a resource.
     message TargetHealth {
-      // Addr is the target <ip:port>.
+      // Addr is the target address.
       string Addr = 1 [(gogoproto.jsontag) = "addr,omitempty"];
       // Protocol is the health check protocol such as "tcp".
       string Protocol = 2 [(gogoproto.jsontag) = "protocol,omitempty"];
