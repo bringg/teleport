@@ -50,14 +50,11 @@ Unhealthy databases will be displayed with a warning icon or tooltip icon indica
 
 Recall that there may be multiple `db_server` heartbeats for the same database, but the web UI only shows a single resource tile for the database.
 If this is the case, then the tooltip will be shown if any of the heartbeats have an unhealthy `target_health.status`.
-The tooltip content may look something like this:
-    
+The tooltip content may look something like this (or equivalent singular form verbiage if there's only one agent):
+
     M out of N Teleport database services proxying access to this database cannot reach the database endpoint.
     <link to healthcheck/network troubleshooting doc>
 
-    Last error: "(tcp) failed: Operation timed out"
-    Database:
-    - URI: <DB uri>
     Affected Teleport database services:
     - Hostname: <hostname>
       UUID: <uuid>
@@ -144,17 +141,13 @@ Alice sees a tooltip or warning icon on the database she set up earlier.
 
 Alice clicks on the tooltip/icon to see the message:
 
-    1/1 Teleport database services proxying access to this database cannot reach the database endpoint.
+    The Teleport database service proxying access to this database cannot reach the database endpoint.
     <link to health check or network troubleshooting doc>
 
-    Last error: "(tcp) failed: Operation timed out"
-    Database:
-    - URI: <DB uri>
-    - IP: <resolved IP>
-    - Port: <port>
-    Affected Teleport database services:
+    Affected Teleport database service:
     - Hostname: <hostname>
       UUID: <uuid>
+      Error: "(tcp) failed: Operation timed out"
 
 Among other suggestions, the documentation includes:
 - check that the database is actually listening on `<port>`
@@ -409,9 +402,9 @@ Dynamic resource matcher config overrides `db.spec.health_check` settings.
             interval: 30s
             timeout: 5s
 
-### Agent behavior
+### DB agent behavior
 
-When an agent begins proxying a database that has health checks enabled, the agent will start a health checker for that database and set its health status to `init`.
+When a DB agent begins proxying a database that has health checks enabled, the agent will asynchronously start a health checker for that database.
 
 When the agent gathers up info for its `db_server` heartbeat, it will get the current health status of the database from its health checker.
 
@@ -423,6 +416,28 @@ When the database is deregistered from the agent, its health checker will be sto
 
 When the database is updated, it will be deregistered and then re-registered, effectively restarting its health checker and health status.
 
+### Target address resolution
+
+The health check target address will be taken from the database uri.
+Teleport does not strictly enforce a host:port database uri, so the target host and/or port may need to be resolved.
+The target host and port should generally be resolved in the same way it is for user connections.
+
+As a special case, some databases have multiple endpoints.
+For example, a MongoDB replicaset connection string may look like this:
+
+    mongodb://host1:port1,host2:port2,host3:port3/?replicaSet=rs0
+
+To complicate matters further, the user may specify a "secondary" read preference, in which case operations will *only* read from secondary members of the replicaset and fail when secondaries are not available, even if the primary is available:
+
+    mongodb://host1:port1,host2:port2,host3:port3/?replicaSet=rs0&readPreference=secondary
+
+When there are multiple endpoints for a target, the health checker should check every endpoint in parallel and combine the results for each health check.
+The combined health check result is a failure if any of the endpoint checks fail.
+
+MongoDB also supports a `mongodb+srv://` scheme, which returns the replicaset "host:port" pairs from a DNS SRV record.
+In this case, the target endpoints can change dynamically based on the SRV record returned.
+Each health check should lookup the SRV record and check each endpoint returned.
+
 ### Health checker behavior
 
 A health checker manager will be added that manages a mapping from DB name to a single health checker:
@@ -431,8 +446,8 @@ A health checker manager will be added that manages a mapping from DB name to a 
     type Target struct {
     	// Name is the uniquely identifying name of the target.
     	Name string
-    	// Addr is the target's address.
-    	Addr string
+    	// GetEndpoints is callback func that returns the target endpoints.
+    	GetEndpoints func []string
     	// Spec is the health check configuration to use for the target.
     	Spec types.HealthCheckSpec
     }
@@ -449,7 +464,8 @@ A health checker manager will be added that manages a mapping from DB name to a 
     	Close()
     }
 
-When a health checker starts, it will immediately run its first health check and then wait for an interval of time to check again.
+When a health checker starts, it will set its health status to `init` and immediately run its first health check.
+It will then wait for an interval of time before checking again.
 
 Each health check will block the health checker until it either passes or fails, so if the health check takes some time to return, then the next check will occur less than interval time from the failure, possibly immediately.
 The maximum time is bounded by the health check timeout.
