@@ -214,9 +214,8 @@ The `healthy` status is reported after the number of consecutive passing health 
 
 The `unhealthy` status is reported after the number of consecutive failing health checks has reached an unhealthy threshold.
 
-As a special case, if the status is currently `init` and a health check fails, then status will change to `unhealthy` even if the unhealthy threshold is larger than 1.
+As a special case when the status is `init`, the first health check will change the status to `healthy` or `unhealthy` regardless of the configured thresholds.
 This special case is to bound the amount of time spent in the `init` status if health checks flap between pass/fail without reaching either threshold.
-It makes sense to bias the health status to `unhealthy` when the network is unreliable anyway.
 
 ### Types of health checks
 
@@ -277,32 +276,25 @@ For comparison, here is a table with the default settings for each:
 | Docker [^7]                    | 30s      | 30s                  | (not configurable) 1 |                    3 |
 | Teleport                       | 10s      | 5s                   |                    2 |                    1 |
 
-As a brief summary of the health checker behavior:
+As a brief summary of the Teleport health checker behavior:
 
 1. it does the first check immediately
-2. it repeats the check after interval time
-3. each check blocks until pass or fail
-4. a single failure during `init` will always go to unhealthy state regardless of the configured unhealthy threshold.
+2. the first heatlh check will always transition to `healthy` or `unhealthy` regardless of configured thresholds
+3. it repeats the check after interval time
+4. each check blocks until pass or fail
 
-The minimum time to transition out of init is therefore given by:
+For Teleport the minimum time init->healthy or init->unhealthy is roughly 0s.
 
-    interval * (threshold-1)
+The maximum time is bounded by the timeout: 5s.
 
-For Teleport, the minimum time init->healthy is 10s and init->unhealthy is roughly 0s.
+Adding the 5s heartbeat polling period to the max times, we get a max time to broadcast the status change: 10s.
 
-The maximum time is given by:
-
-    max(interval, timeout) * (healthy_threshold-1) + timeout
-
-The maximum time for both is the same: 15s.
-
-Adding the 5s heartbeat polling period to the max times, we get a max time to broadcast the status change: 20s.
-
-Thus, broadcasting the health status for a new or updated resource will take between 0s and 20s.
+Thus, broadcasting the health status for a new or updated resource will take between 0s and 10s.
 
 This is fast enough for web UI enrollment interactions that might wait for the resource network status to be reported.
 
 The default healthy threshold is set to a higher value than the unhealthy threshold to help avoid false positive `healthy` status when network connectivity is unreliable.
+It makes sense to bias the health status to `unhealthy` when the network is unreliable anyway.
 
 [^2]: https://docs.aws.amazon.com/elasticloadbalancing/latest/network/target-group-health-checks.html
 [^3]: https://learn.microsoft.com/en-us/azure/load-balancer/load-balancer-custom-probe-overview
