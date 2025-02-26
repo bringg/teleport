@@ -190,7 +190,7 @@ The idea is to keep the impersonation and remove the ability to set the
 (Teleport agent SA and user email).
 To do so, a new role version, `v8` will be introduced, which will indicate
 the web ui not to show those fields.
-When a `v8` role is found, if either the `kubernetes_group` or
+If either the `kubernetes_group` or
 `kubernetes_users` fields are set when a `v8` role is created, updated, or
 upserted the request will be rejected.
 This will allow existing setups will keep working, as `v7` behavior will not
