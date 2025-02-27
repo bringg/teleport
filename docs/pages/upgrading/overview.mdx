@@ -37,20 +37,16 @@ Teleport cluster.
    incidents while upgrading the Auth Service, which may perform data
    migrations on its backend. Follow the instructions in [Backup and
    Restore](../admin-guides/management/operations/backup-restore.mdx).
-
 1. Upgrade all **Auth Service** instances to the **target version first**.
    Auth Service instances may be upgraded in any sequence or at the same time. After
    the upgrade CONFIRM that the cluster is in a healthy state before continuing.
-
 1. Upgrade Proxy Service instances to the same version number as the Auth
    Service. Proxy Service instances are stateless and can be upgraded in any
    sequence or at the same time. After the upgrade CONFIRM that the cluster
    is in a healthy state before continuing.
-
 1. Upgrade your Teleport Agents to the same version number as the Auth Service.
    You can upgrade resource agents in any sequence or at the same time. After the
    upgrade CONFIRM that the cluster is in a healthy state before continuing.
-
 1. Upgrade your Teleport clients and plugins (tctl, tsh, tbot, terraform-provider, event-handler, etc.).
 
 ## Upgrading multiple Teleport clusters
