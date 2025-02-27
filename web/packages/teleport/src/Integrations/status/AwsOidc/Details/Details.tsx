@@ -15,7 +15,6 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-
 import { useParams } from 'react-router';
 
 import { Danger } from 'design/Alert';
@@ -52,7 +51,21 @@ export function Details() {
   }
 
   const { data: integration } = integrationAttempt;
-  const { unresolvedUserTasks } = statsAttempt.data;
+  const { awsec2, awsrds, awseks, unresolvedUserTasks } = statsAttempt.data;
+
+  let pendingTasks = unresolvedUserTasks;
+  switch (resourceKind) {
+    case AwsResource.rds:
+      pendingTasks = awsrds.unresolvedUserTasks;
+      break;
+    case AwsResource.ec2:
+      pendingTasks = awsec2.unresolvedUserTasks;
+      break;
+    case AwsResource.eks:
+      pendingTasks = awseks.unresolvedUserTasks;
+      break;
+  }
+
   return (
     <>
       {integration && (
@@ -65,7 +78,8 @@ export function Details() {
               <AwsOidcTitle integration={integration} resource={resourceKind} />
               <TaskAlert
                 name={integration.name}
-                pendingTasksCount={unresolvedUserTasks}
+                pendingTasksCount={pendingTasks}
+                taskType={resourceKind}
               />
             </>
           )}
