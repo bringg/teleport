@@ -29,7 +29,7 @@ section, you must adhere to the following sequence when upgrading a self-hosted
 Teleport cluster.
 
 <Admonition type="warning">
-  If you are upgrading more then one version number, you must repeat the
+  If you are upgrading more then one major version, you must repeat the
   following steps for each major version until you reach your target version.
 </Admonition>
 
@@ -39,14 +39,14 @@ Teleport cluster.
    Restore](../admin-guides/management/operations/backup-restore.mdx).
 1. Upgrade all **Auth Service** instances to the **target version first**.
    Auth Service instances may be upgraded in any sequence or at the same time. After
-   the upgrade CONFIRM that the cluster is in a healthy state before continuing.
-1. Upgrade Proxy Service instances to the same version number as the Auth
+   the upgrade **confirm** that the cluster is in a healthy state before continuing.
+1. Upgrade Proxy Service instances to the same version as the Auth
    Service. Proxy Service instances are stateless and can be upgraded in any
-   sequence or at the same time. After the upgrade CONFIRM that the cluster
+   sequence or at the same time. After the upgrade **confirm** that the cluster
    is in a healthy state before continuing.
-1. Upgrade your Teleport Agents to the same version number as the Auth Service.
+1. Upgrade your Teleport Agents to the same version as the Auth Service.
    You can upgrade resource agents in any sequence or at the same time. After the
-   upgrade CONFIRM that the cluster is in a healthy state before continuing.
+   upgrade **confirm** that the cluster is in a healthy state before continuing.
 1. Upgrade your Teleport clients and plugins (tctl, tsh, tbot, terraform-provider, event-handler, etc.).
 
 ## Upgrading multiple Teleport clusters
