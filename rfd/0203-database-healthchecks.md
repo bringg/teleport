@@ -12,9 +12,11 @@ state: draft
 
 ## What
 
-Teleport database agents will periodically perform health checks to a database's endpoint and report the results as a health status in the agent's `db_server` heartbeat.
+Improve availability of databases proxied by more than one agent (i.e., a high-availability setup [^1]), such that users do not experience random connection failures when only a subset of agents can reach the database over the network.
 
-When a Teleport proxy routes a user connection, the proxy will prioritize a `healthy` agent->DB status over "less healthy" agent->DB status if multiple agents proxy the same database.
+Network health between an agent and the database it proxies will also be made visible to users to surface network problems and help the user troubleshoot.
+
+During resource onboarding, the network health of a newly registered database will be used to automatically detect misconfiguration and provide troubleshooting tips and suggestions.
 
 ## Why
 
@@ -41,6 +43,10 @@ Related issues:
 - [Detect and report latency measurements for Desktop sessions in the UI](https://github.com/gravitational/teleport/issues/35691)
 
 ## Details
+
+Teleport database agents will periodically perform health checks to a database's endpoint and report the results as a health status in the agent's `db_server` heartbeat.
+
+When the Teleport proxy routes a user connection to a database agent it will prioritize database agents that have healthy network connectivity to the database endpoint over agents that do not.
 
 ### UX
 
