@@ -87,8 +87,6 @@ A Teleport cluster admin is new to Teleport and would like to enroll an AWS RDS 
 - The user logs into Teleport, sees the "Enroll New Resource" button and clicks that.
 - They click on the "RDS PostgreSQL" tile - a guided database enrollment wizard.
 - After selecting an AWS integration, region, and VPC, the user sees the "Enroll RDS Database" page.
-- On the page is a toggle button labeled "Monitor database endpoint health", which is already enabled by default.
-- The user disables the toggle, which displays a warning, so they toggle it back to the default enabled state.
 - The user selects a database to enroll, and clicks "Next". 
 - On the next page, the user is asked to configure an IAM role, choose AWS subnets and security groups, and finally deploy a Teleport database service in ECS using those settings.
 - The user selects a public subnet and a security group that allows all outbound traffic, then clicks "Deploy".
@@ -104,7 +102,7 @@ After the new agent joins, the page shows a success message:
 
 The page displays a new message below that:
 
-    Teleport is testing network connectivity between the Database Service and your Database.
+    Teleport is testing network connectivity between the Database Service and your database.
 
 After a short time, the page displays a message telling the user that the agent cannot reach the database endpoint:
 
