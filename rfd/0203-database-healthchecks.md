@@ -457,6 +457,8 @@ Likewise, if the last check failed but the current check passes, then the counte
 
 If the number of consecutive passing or failing checks reaches the healthy or unhealthy threshold, respectively, then the health status is transitioned to the corresponding status: `healthy` or `unhealthy`.
 
+When the status is `initialized`, a single pass or failure with transition the status to `healthy` or `unhealthy`, regardless of configured thresholds.
+
 Example behavior with the default settings (Interval=10s, Timeout=5s, HealthyThreshold=2, UnhealthyThreshold=1):
 
 1. Health checker starts - status=`initialized`, startTime=0s, endTime=0s, count=0, lastErr=nil
