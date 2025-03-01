@@ -18,24 +18,15 @@ Network health between an agent and the database it proxies will also be made vi
 
 During resource onboarding, the network health of a newly registered database will be used to automatically detect misconfiguration and provide troubleshooting tips and suggestions.
 
-## Why
-
-The primary motivation for this change is to enable smarter proxy->agent routing when multiple DB agents heartbeat the same database (i.e., an HA setup [^1]).
-
 [^1]: https://goteleport.com/docs/enroll-resources/database-access/guides/ha/#combined-replicas
 
-Currently, in an HA DB agent configuration, the proxy will randomly choose one of the DB agents to handle a user connection.
+## Why
 
-If a subset of the DB agents can't reach the database endpoint, then user connection attempts will randomly fail.
-
-To fix this, the Teleport proxy service can sort the DB agents by target health status and preferentially dial agents that have healthy network connectivity to the database.
-
-Secondary motivations for this change:
-
-1. improve database resource onboarding UX
-2. surface agent->resource connectivity issues early
-3. improve troubleshooting
-4. lay the groundwork for collecting agent->resource latency measurements that can be used to make routing decisions based on latency
+1. Fix random user connection failures caused by network issues in HA agent deployments. This issue is a frequent source of support tickets and user frustration.
+2. Improve database resource onboarding UX
+3. Surface agent->resource connectivity issues early
+4. Improve troubleshooting
+5. Lay the groundwork for collecting agent->resource latency measurements that can be used to make routing decisions based on latency
 
 Related issues:
 - [Database Access upstream DB health checks](https://github.com/gravitational/teleport/issues/20544)
@@ -47,6 +38,12 @@ Related issues:
 Teleport database agents will periodically perform health checks to a database's endpoint and report the results as a health status in the agent's `db_server` heartbeat.
 
 When the Teleport proxy routes a user connection to a database agent it will prioritize database agents that have healthy network connectivity to the database endpoint over agents that do not.
+
+Currently, in an HA DB agent configuration, the proxy will randomly choose one of the DB agents to handle a user connection.
+
+If a subset of the DB agents can't reach the database endpoint, then user connection attempts will randomly fail.
+
+To fix this, the Teleport proxy service will group DB agents by target health status, shuffle each group, and then preferentially dial agents that have healthy network connectivity to the database.
 
 ### UX
 
