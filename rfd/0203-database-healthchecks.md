@@ -204,21 +204,21 @@ The `target_health` will include, among other things, a `status` field.
 
 These are the possible values for the `db_server.status.target_health.status` field:
 - `""`
-- `init`
+- `initialized`
 - `healthy`
 - `unhealthy`
 
 An empty status `""` indicates an unknown or disabled status.
 If health checks are disabled or an older agent is proxying the DB, then the health status will be empty.
 
-The `init` status is the initial health status and means that the health checking has started but the status has yet to be determined as `healthy` or `unhealthy`.
+The `initialized` status is the initial health status and means that the health checking has started but the status has yet to be determined as `healthy` or `unhealthy`.
 
 The `healthy` status is reported after the number of consecutive passing health checks has reached a healthy threshold.
 
 The `unhealthy` status is reported after the number of consecutive failing health checks has reached an unhealthy threshold.
 
-As a special case when the status is `init`, the first health check will change the status to `healthy` or `unhealthy` regardless of the configured thresholds.
-This special case is to bound the amount of time spent in the `init` status if health checks flap between pass/fail without reaching either threshold.
+As a special case when the status is `initialized`, the first health check will change the status to `healthy` or `unhealthy` regardless of the configured thresholds.
+This special case is to bound the amount of time spent in the `initialized` status if health checks flap between pass/fail without reaching either threshold.
 
 ### Types of health checks
 
@@ -306,7 +306,7 @@ As a brief summary of the Teleport health checker behavior:
 3. it repeats the check after interval time
 4. each check blocks until pass or fail
 
-For Teleport the minimum time init->healthy or init->unhealthy is roughly 0s.
+For Teleport the minimum time initialized->healthy or initialized->unhealthy is roughly 0s.
 
 The maximum time is bounded by the timeout: 5s.
 
@@ -437,7 +437,7 @@ A health checker manager will be added that manages a mapping from DB name to a 
     	Close()
     }
 
-When a health checker starts, it will set its health status to `init` and immediately run its first health check.
+When a health checker starts, it will set its health status to `initialized` and immediately run its first health check.
 It will then wait for an interval of time before checking again.
 
 Each health check will block the health checker until it either passes or fails, so if the health check takes some time to return, then the next check will occur less than interval time from the failure, possibly immediately.
@@ -459,8 +459,8 @@ If the number of consecutive passing or failing checks reaches the healthy or un
 
 Example behavior with the default settings (Interval=10s, Timeout=5s, HealthyThreshold=2, UnhealthyThreshold=1):
 
-1. Health checker starts - status=`init`, startTime=0s, endTime=0s, count=0, lastErr=nil
-2. health check passes   - status=`init`, startTime=0s, endTime=0s, count=1, lastErr=nil
+1. Health checker starts - status=`initialized`, startTime=0s, endTime=0s, count=0, lastErr=nil
+2. health check passes   - status=`healthy`, startTime=0s, endTime=0s, count=1, lastErr=nil
 3. health check fails    - status=`unhealthy`, startTime=10s, endTime=15s, count=1, lastErr="connection timeout"
 4. health check passes   - status=`unhealthy`, startTime=20s, endTime=20s, count=1, lastErr=nil
 5. health check passes   - status=`healthy`, startTime=30s, endTime=30s, count=2, lastErr=nil
@@ -473,14 +473,14 @@ That will be changed to group the agents by health status, shuffle each group, a
 
 The priority of health statuses will be:
 1. `healthy`
-2. `init`
+2. `initialized`
 3. `""` (unknown)
 4. `unhealthy`
 
 The justification for the `healthy` and `unhealthy` status relative ordering should be obvious.
-It is perhaps less obvious why `init` should be preferred over `""`.
-By definition, an `init` status represents zero failing checks and zero or more passing health checks, whereas `""` represents no health information at all.
-Therefore, the proxy should prefer `init` over `""` health status.
+It is perhaps less obvious why `initialized` should be preferred over `""`.
+By definition, an `initialized` status represents zero failing checks and zero or more passing health checks, whereas `""` represents no health information at all.
+Therefore, the proxy should prefer `initialized` over `""` health status.
 
 ### Security
 
