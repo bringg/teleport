@@ -224,6 +224,8 @@ This special case is to bound the amount of time spent in the `initialized` stat
 
 For the initial implementation we will only support TCP health checks and only for databases.
 
+A TCP health check is generic and simple, so the initial implementation will support health checks for all databases that Teleport supports: Postgres, MySQL, MongoDB, etc.
+
 We can extend this feature later to include additional health check protocols such as HTTP and TLS checks.
 
 We can also extend this feature to other one-agent-to-many-resources types of resources: apps, Windows desktops, OpenSSH servers, etc.
