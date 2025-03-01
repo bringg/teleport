@@ -176,6 +176,8 @@ spec:
   ...*snip*...
   host_id: 278be63c-c87e-4d7e-a286-86002c7c45c3
   hostname: mars.internal
+  ...*snip*...
+status:
   target_health:
     addr: example.com:5432
     protocol: TCP
@@ -197,10 +199,10 @@ These are both good improvements for monitoring and may be added to this RFD in 
 
 ### Health status
 
-Database target health status will be stored in the DB agent's ephemeral `db_server` heartbeat as the `spec.target_health` field.
+Database target health status will be stored in the DB agent's ephemeral `db_server` heartbeat as the `status.target_health` field.
 The `target_health` will include, among other things, a `status` field.
 
-These are the possible values for the `target_health.status` field:
+These are the possible values for the `db_server.status.target_health.status` field:
 - `""`
 - `init`
 - `healthy`
@@ -234,19 +236,39 @@ Otherwise, the check has passed.
 
 ### Configuration
 
-Health checks will be an opt-in configurable setting with reasonable defaults.
+Health checks will be an opt-out configurable setting with reasonable defaults.
 
-Health checks should be opt-in to avoid issues for existing customers who upgrade.
-However, our docs configuration references should have health checks enabled to encourage usage.
+A new cluster resource will be added to manage health check settings: `health_check`.
+
+A `health_check` preset resource named "default" will be added.
+
+The "default" `health_check` preset will enable health checks for all databases.
+
+Users will be able to easily opt-out of health checks by setting `enabled: false` on the "default" `health_check`.
+
+Teleport database agents will cache `health_check` resources.
 
 #### Configuration settings
 
-Health check will expose the following settings:
+The `health_check` resource will expose the following settings:
+
+- MatchLabels: Resources with matching labels will use these health check settings.
 - Enabled: whether to enable health checks
 - Interval: time between each health check
 - Timeout: the health check connection attempt timeout (timing out fails the check)
 - Healthy Threshold: number of consecutive passing health checks after which the resource health status is changed to `healthy`
 - Unhealthy Threshold: number of consecutive failing health checks after which the resource health status is changed to `unhealthy`
+
+These settings are sufficient to support TCP connection health checks in the initial implementation.
+They are also necessary for other types of health check, including TCP, TLS, and HTTP(S).
+Thus, they generalize well.
+Future work can extend `health_check` with more specific settings as needed to support new health check types.
+
+#### Configuration label matching 
+
+The settings in a `health_check` resource will be used for a database if all of the labels in `health_check.spec.match_labels` match the database's labels.
+
+If multiple `health_check` resources match a database, then the `health_check` resources will be sorted by name and only the first will apply.
 
 #### Configuration restrictions and defaults
 
@@ -304,103 +326,50 @@ It makes sense to bias the health status to `unhealthy` when the network is unre
 [^6]: https://cloud.google.com/load-balancing/docs/health-check-concepts
 [^7]: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#configure-probes
 
-#### Dynamic config example
+#### Config example
 
-    kind: db
+    $ tctl get health_check/default
+    kind: health_check
     version: v3
     metadata:
-      name: "example"
+      name: "default"
       labels:
-        env: "dev"
+        teleport.internal/resource-type: preset
     spec:
-      protocol: "postgres"
-      uri: "localhost:5432"
-      health_check:
-        enabled: true
-        interval: 30s
-        timeout: 5s
-        healthy_threshold: 3
-        unhealthy_threshold: 2
-  
-#### Static config example
-
-    db_service:
       enabled: true
-      databases:
-      - name: "example"
-        protocol: "postgres"
-        uri: "localhost:5432"
-        static_labels:
-          "env": "dev"
-        health_check:
-          enabled: true
-          interval: 30s
-          timeout: 5s
-          healthy_threshold: 3
-          unhealthy_threshold: 2
+      match_labels:
+        '*': '*'
+      interval: 10s
+      timeout: 5s
+      healthy_threshold: 2
+      unhealthy_threshold: 1
 
 #### Terraform config example
 
-    resource "teleport_database" "example" {
+    resource "teleport_health_check" "example" {
       version = "v3"
       metadata = {
         name = "example"
-        labels = {
-          "env" = "dev"
-        }
       }
       spec = {
-        protocol = "postgres"
-        uri      = "localhost:5432"
-        health_check = {
-          enabled             = true
-          healthy_threshold   = 1
-          unhealthy_threshold = 1
-          interval            = "30s"
-          timeout             = "5s"
+        enabled = true
+        match_labels = {
+          env = "dev"
         }
+        healthy_threshold   = 1
+        unhealthy_threshold = 1
+        interval            = "30s"
+        timeout             = "5s"
       }
     }
 
-#### Discovery config example
-
-Discovery service creates `db` objects and db agents can configure custom health check settings in their dynamic resources matchers.
-
-Dynamic resource matcher config overrides `db.spec.health_check` settings.
-
-    discovery_service:
-      enabled: true
-      discovery_group: "teleport-dev-2"
-      aws:
-        - types:
-            - "rds"
-          regions:
-            - "ca-central-1"
-          tags:
-            "env": "prod"
-
-    db_service:
-      enabled: true
-      resources:
-        - labels:
-            "teleport.dev/origin": "dynamic"
-            "env": "dev"
-          health_check:
-            enabled: false # disable health checks for these databases
-        - labels:
-            "region": "ca-central-1"
-            "teleport.dev/origin": "cloud"
-            "teleport.dev/cloud": "AWS"
-          health_check:
-            enabled: true # enabled with these settings for each DB matched
-            healthy_threshold: 1
-            unhealthy_threshold: 1
-            interval: 30s
-            timeout: 5s
-
 ### DB agent behavior
 
-When a DB agent begins proxying a database that has health checks enabled, the agent will asynchronously start a health checker for that database.
+DB agents will cache `health_check` resources.
+
+When a DB agent begins proxying a database, the agent will get all `health_check` resources and determine which, if any, will apply to the database.
+
+If health checks are enabled for the database, then the agent will asynchronously start a health checker for that database.
 
 When the agent gathers up info for its `db_server` heartbeat, it will get the current health status of the database from its health checker.
 
@@ -411,6 +380,14 @@ When any of the `target_health` fields change, the `db_server` heartbeat will be
 When the database is deregistered from the agent, its health checker will be stopped.
 
 When the database is updated, it will be deregistered and then re-registered, effectively restarting its health checker and health status.
+
+DB agents will also watch `health_check` resources.
+
+When `health_check` resources are created, deleted, or updated, the DB agent will reevaluate the `health_check` label selectors for each registered database.
+
+If the health check settings for a database change, then its current health checker, if any, will be stopped, and a new health checker may be started.
+
+The database's health status will also be reset when its health check settings change.
 
 ### Target address resolution
 
@@ -445,7 +422,7 @@ A health checker manager will be added that manages a mapping from DB name to a 
     	// GetEndpoints is callback func that returns the target endpoints.
     	GetEndpoints func []string
     	// Spec is the health check configuration to use for the target.
-    	Spec types.HealthCheckSpec
+    	Spec healthcheck.HealthCheckSpec
     }
 
     // Manager manages health checkers.
@@ -517,60 +494,62 @@ N/A
 
 ### Proto Specification
 
-A new message, HealthCheckSpec, will be added as field named `health_check` in DatabaseSpecV3 and ClusterNetworkingConfigSpecV2.
+#### `health_check` resource
 
-    // HealthCheckSpec is the configuration for network health checks from an agent
-    // to a resource.
+    // HealthCheck is the configuration for network health checks from an agent to
+    // its proxied resource.
+    message HealthCheck {
+      string kind = 1;
+      string sub_kind = 2;
+      string version = 3;
+      teleport.header.v1.Metadata metadata = 4;
+    
+      HealthCheckSpec spec = 5;
+    }
+    
+    // HealthCheckSpec is the health check spec.
     message HealthCheckSpec {
-      // Enabled determines if health checks are enabled for this resource.
-      BoolValue Enabled = 1 [
-          (gogoproto.nullable) = true,
-          (gogoproto.jsontag) = "enabled,omitempty",
-          (gogoproto.customtype) = "BoolOption"
-      ];
+      // MatchLabels is used to select resources that these settings apply to.
+      repeated teleport.label.v1.Label match_labels = 1;
+      // Enabled determines if health checks are enabled for matching resources.
+      bool enabled = 2;
       // Timeout is the health check connection establishment timeout.
       // An attempt that times out is a failed attempt.
-      int64 Timeout = 2 [
-        (gogoproto.jsontag) = "timeout,omitempty",
-        (gogoproto.casttype) = "Duration"
-      ];
+      google.protobuf.Duration timeout = 3;
       // Interval is the time between each health check.
-      int64 Interval = 3 [
-        (gogoproto.jsontag) = "interval,omitempty",
-        (gogoproto.casttype) = "Duration"
-      ];
+      google.protobuf.Duration interval = 4;
       // HealthyThreshold is the number of consecutive passing health checks after
       // which a target's health status becomes "healthy".
-      uint32 HealthyThreshold = 4 [(gogoproto.jsontag) = "healthy_threshold,omitempty"];
+      uint32 healthy_threshold = 5;
       // UnhealthyThreshold is the number of consecutive failing health checks after
       // which a target's health status becomes "unhealthy".
-      uint32 UnhealthyThreshold = 5 [(gogoproto.jsontag) = "unhealthy_threshold,omitempty"];
+      uint32 unhealthy_threshold = 6;
     }
 
-A new message, TargetHealth, will be added as a field named `target_health` in DatabaseServerSpecV3.
+#### Reporting health status in heartbeat
 
+A new message, TargetHealth, will be added to hold health status information.
+
+TargetHealth will be added as a field to the database heartbeat: `db_server.status.target_health`.
+    
     // TargetHealth describes the health status of network connectivity between
     // an agent and a resource.
     message TargetHealth {
-      // Addr is the target address.
-      string Addr = 1 [(gogoproto.jsontag) = "addr,omitempty"];
+      // Addr is the target <ip:port>.
+      string addr = 1;
       // Protocol is the health check protocol such as "tcp".
-      string Protocol = 2 [(gogoproto.jsontag) = "protocol,omitempty"];
-      // Status is the health status, one of "", "init", "healthy", "unhealthy".
-      string Status = 3 [(gogoproto.jsontag) = "status,omitempty"];
+      string protocol = 2;
+      // State is the health status, one of "", "init", "healthy", "unhealthy".
+      string status = 3;
       // TransitionTimestamp is the time that the last status transition occurred.
-      google.protobuf.Timestamp TransitionTimestamp = 4 [
-        (gogoproto.jsontag) = "transition_timestamp,omitempty",
-        (gogoproto.stdtime) = true,
-        (gogoproto.nullable) = true
-      ];
+      google.protobuf.Timestamp transition_timestamp = 4;
       // TransitionReason explains why the last transition occurred.
-      string TransitionReason = 5 [(gogoproto.jsontag) = "transition_reason,omitempty"];
+      string transition_reason = 5;
       // TransitionError shows the health check error observed when the transition
       // happened. Empty when transitioning to "healthy".
-      string TransitionError = 6 [(gogoproto.jsontag) = "transition_error,omitempty"];
+      string transition_error = 6;
       // Message is additional information meant for a user.
-      string Message = 7 [(gogoproto.jsontag) = "message,omitempty"];
+      string message = 7;
     }
 
 ### Backward Compatibility
