@@ -928,6 +928,21 @@ func TestMux(t *testing.T) {
 
 			require.Equal(t, addrV6.String(), out)
 		})
+		t.Run("single signed PROXY header from IPv6 to IPv4, no downgrade", func(t *testing.T) {
+			conn, err := net.Dial("tcp", listener4.Addr().String())
+			require.NoError(t, err)
+
+			defer conn.Close()
+
+			_, err = signPROXYHeader(signPROXYHeaderInput{
+				source:      &addrV6,
+				destination: &addr1,
+				clusterName: clusterName,
+				signingCert: tlsProxyCert,
+				signer:      jwtSigner,
+			})
+			require.Error(t, err)
+		})
 		t.Run("two signed PROXY headers", func(t *testing.T) {
 			conn, err := net.Dial("tcp", listener4.Addr().String())
 			require.NoError(t, err)

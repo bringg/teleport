@@ -94,7 +94,7 @@ func TestPROXYEnabledListener_Accept(t *testing.T) {
 			PROXYProtocolMode:  PROXYProtocolOff,
 		},
 		{
-			name:               "signed PROXY v2 header, downgrade mode",
+			name:               "signed PROXY v2 header, mixed version in downgrade mode",
 			proxyLine:          signedHeaderDowngrade,
 			expectedLocalAddr:  addr2.String(),
 			expectedRemoteAddr: addrV6.String(),
