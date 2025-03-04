@@ -951,6 +951,7 @@ func (s *Server) handleForwardedTCPIPRequest(ctx context.Context, nch ssh.NewCha
 		return trace.Wrap(err)
 	}
 
+	s.logger.WarnContext(ctx, "remote TCPIP request", "req", req)
 	// Create context for this channel. This context will be closed when
 	// forwarding is complete.
 	scx, err := srv.NewServerContext(ctx, s.connectionContext, s, s.identityContext)
@@ -966,7 +967,18 @@ func (s *Server) handleForwardedTCPIPRequest(ctx context.Context, nch ssh.NewCha
 	scx.DstAddr = sshutils.JoinHostPort(req.Host, req.Port)
 	defer scx.Close()
 
-	event := scx.GetPortForwardEvent(events.PortForwardRemoteConnEvent, events.PortForwardCode, scx.DstAddr)
+	// the port we have access to during port forwarding is always on the local (target) side of the connection,
+	// so the Addr field of the audit log should just be the target host with the requested port
+	addr := scx.ConnectionContext.ServerConn.LocalAddr().String()
+	host, _, err := sshutils.SplitHostPort(addr)
+	if err != nil {
+		s.logger.WarnContext(ctx, "Target host for port forwarding could not be determined for audit logging", "error", err)
+	} else {
+		addr = sshutils.JoinHostPort(host, req.Port)
+	}
+
+	event := scx.GetPortForwardEvent(events.PortForwardRemoteConnEvent, events.PortForwardCode, addr)
+
 	s.emitAuditEventWithLog(ctx, &event)
 
 	// Open a forwarding channel on the client.
@@ -989,7 +1001,7 @@ func (s *Server) handleForwardedTCPIPRequest(ctx context.Context, nch ssh.NewCha
 	ch = scx.TrackActivity(ch)
 
 	defer func() {
-		stopEvent := scx.GetPortForwardEvent(events.PortForwardRemoteConnEvent, events.PortForwardStopCode, scx.DstAddr)
+		stopEvent := scx.GetPortForwardEvent(events.PortForwardRemoteConnEvent, events.PortForwardStopCode, addr)
 		s.emitAuditEventWithLog(ctx, &stopEvent)
 	}()
 
@@ -1138,6 +1150,8 @@ func (s *Server) handleDirectTCPIPRequest(ctx context.Context, ch ssh.Channel, r
 		}
 		return
 	}
+
+	s.logger.WarnContext(ctx, "local TCPIP request", "req", req)
 	scx.AddCloser(ch)
 	scx.RemoteClient = s.remoteClient
 	scx.ExecType = teleport.ChanDirectTCPIP
@@ -1167,17 +1181,27 @@ func (s *Server) handleDirectTCPIPRequest(ctx context.Context, ch ssh.Channel, r
 	}
 	defer conn.Close()
 
-	event := scx.GetPortForwardEvent(events.PortForwardLocalEvent, events.PortForwardCode, scx.DstAddr)
+	// the port we have access to during port forwarding is always on the local (target) side of the connection,
+	// so the Addr field of the audit log should just be the target host with the requested port
+	addr := scx.ConnectionContext.ServerConn.LocalAddr().String()
+	host, _, err := sshutils.SplitHostPort(addr)
+	if err != nil {
+		s.logger.WarnContext(ctx, "Target host for port forwarding could not be determined for audit logging", "error", err)
+	} else {
+		addr = sshutils.JoinHostPort(host, req.Port)
+	}
+
+	event := scx.GetPortForwardEvent(events.PortForwardLocalEvent, events.PortForwardCode, addr)
 	s.emitAuditEventWithLog(s.closeContext, &event)
 
 	if err := utils.ProxyConn(ctx, ch, conn); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
 		s.logger.WarnContext(ctx, "Failed proxying data for port forwarding connection", "error", err)
 
-		event = scx.GetPortForwardEvent(events.PortForwardLocalEvent, events.PortForwardFailureCode, scx.DstAddr)
+		event = scx.GetPortForwardEvent(events.PortForwardLocalEvent, events.PortForwardFailureCode, addr)
 		s.emitAuditEventWithLog(s.closeContext, &event)
 	}
 
-	event = scx.GetPortForwardEvent(events.PortForwardLocalEvent, events.PortForwardStopCode, scx.DstAddr)
+	event = scx.GetPortForwardEvent(events.PortForwardLocalEvent, events.PortForwardStopCode, addr)
 	s.emitAuditEventWithLog(s.closeContext, &event)
 }
 
