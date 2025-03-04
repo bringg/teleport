@@ -1332,6 +1332,9 @@ func (s *Server) obtainFallbackUID(ctx context.Context, username string) (uid in
 // HandleNewChan is called when new channel is opened
 func (s *Server) HandleNewChan(ctx context.Context, ccx *sshutils.ConnectionContext, nch ssh.NewChannel) {
 	identityContext, err := s.authHandlers.CreateIdentityContext(ccx.ServerConn)
+	if identityContext.AccessPermit == nil {
+		fmt.Printf("---> nil access permit in HandleNewChan: %+v\n", identityContext)
+	}
 	if err != nil {
 		s.rejectChannel(ctx, nch, ssh.Prohibited, fmt.Sprintf("Unable to create identity from connection: %v", err))
 		return
@@ -1563,6 +1566,9 @@ func (s *Server) handleSessionRequests(ctx context.Context, ccx *sshutils.Connec
 
 	// Create context for this channel. This context will be closed when the
 	// session request is complete.
+	if identityContext.AccessPermit == nil {
+		fmt.Printf("---> nil access permit in handleSessionRequests: %+v\n", identityContext)
+	}
 	scx, err := srv.NewServerContext(ctx, ccx, s, identityContext, func(cfg *srv.MonitorConfig) {
 		cfg.IdleTimeoutMessage = netConfig.GetClientIdleTimeoutMessage()
 		cfg.MessageWriter = &stderrWriter{writer: func(msg string) { s.writeStderr(ctx, ch, msg) }}
