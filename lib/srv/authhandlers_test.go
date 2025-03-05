@@ -187,6 +187,9 @@ func TestRBAC(t *testing.T) {
 	err = server.auth.SetClusterName(clusterName)
 	require.NoError(t, err)
 
+	_, err = server.auth.CreateClusterNetworkingConfig(context.Background(), types.DefaultClusterNetworkingConfig())
+	require.NoError(t, err)
+
 	accessPoint := mockCAandAuthPrefGetter{
 		AccessPoint: server.auth,
 		authPref:    types.DefaultAuthPreference(),

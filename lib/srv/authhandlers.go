@@ -120,6 +120,7 @@ func (c *AuthHandlerConfig) CheckAndSetDefaults() error {
 // used by the regular and forwarding server.
 type AuthHandlers struct {
 	loginChecker
+	proxyingChecker
 
 	log *slog.Logger
 
@@ -140,10 +141,13 @@ func NewAuthHandlers(config *AuthHandlerConfig) (*AuthHandlers, error) {
 		c:   config,
 		log: slog.With(teleport.ComponentKey, config.Component),
 	}
-	ah.loginChecker = &ahLoginChecker{
+	lc := &ahLoginChecker{
 		log: ah.log,
 		c:   ah.c,
 	}
+
+	ah.loginChecker = lc
+	ah.proxyingChecker = lc
 
 	return ah, nil
 }
@@ -161,6 +165,14 @@ func (h *AuthHandlers) CreateIdentityContext(sconn *ssh.ServerConn) (IdentityCon
 	if permitRaw, ok := sconn.Permissions.Extensions[utils.ExtIntSSHAccessPermit]; ok {
 		accessPermit = &decisionpb.SSHAccessPermit{}
 		if err := utils.FastUnmarshal([]byte(permitRaw), accessPermit); err != nil {
+			return IdentityContext{}, trace.Wrap(err)
+		}
+	}
+
+	var proxyingPermit *sshProxyingPermit
+	if permitRaw, ok := sconn.Permissions.Extensions[extIntSSHProxyingPermit]; ok {
+		proxyingPermit = &sshProxyingPermit{}
+		if err := utils.FastUnmarshal([]byte(permitRaw), proxyingPermit); err != nil {
 			return IdentityContext{}, trace.Wrap(err)
 		}
 	}
@@ -197,6 +209,7 @@ func (h *AuthHandlers) CreateIdentityContext(sconn *ssh.ServerConn) (IdentityCon
 	return IdentityContext{
 		UnmappedIdentity:        unmappedIdentity,
 		AccessPermit:            accessPermit,
+		ProxyingPermit:          proxyingPermit,
 		Login:                   sconn.User(),
 		CertAuthority:           certAuthority,
 		AccessChecker:           accessChecker,
@@ -279,7 +292,7 @@ func (h *AuthHandlers) CheckPortForward(addr string, ctx *ServerContext, request
 
 // UserKeyAuth implements SSH client authentication using public keys and is
 // called by the server every time the client connects.
-func (h *AuthHandlers) UserKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+func (h *AuthHandlers) UserKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (ppms *ssh.Permissions, rerr error) {
 	ctx := context.Background()
 
 	fingerprint := fmt.Sprintf("%v %v", key.Type(), sshutils.Fingerprint(key))
@@ -479,12 +492,6 @@ func (h *AuthHandlers) UserKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*s
 		}
 	}
 
-	// Skip RBAC check for proxy or git servers. RBAC check on git servers are
-	// performed outside this handler.
-	if h.isProxy() || h.c.Component == teleport.ComponentForwardingGit {
-		return permissions, nil
-	}
-
 	// even if the returned CA isn't used when a RBAC check isn't
 	// preformed, we still need to verify that User CA signed the
 	// client's certificate
@@ -496,24 +503,29 @@ func (h *AuthHandlers) UserKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*s
 	}
 
 	var accessPermit *decisionpb.SSHAccessPermit
-
 	var proxyPermit *sshProxyingPermit
+	var diagnosticTracing bool
 
-	// check if the user has permission to log into the node.
-	if h.c.Component == teleport.ComponentForwardingNode {
-		// If we are forwarding the connection, the target node
-		// exists and it is an agentless node, preform an RBAC check.
-		// Otherwise if the target node does not exist the node is
-		// probably an unregistered SSH node; do not preform an RBAC check
+	switch h.c.Component {
+	case teleport.ComponentForwardingGit:
+		// git forwarder performs remaining checks at a later step
+		return permissions, nil
+	case teleport.ComponentProxy:
+		proxyPermit, err = h.evaluateSSHProxying(ident, ca, clusterName.GetClusterName(), conn.User())
+	case teleport.ComponentForwardingNode:
+		diagnosticTracing = true
 		if h.c.TargetServer != nil && h.c.TargetServer.IsOpenSSHNode() {
 			accessPermit, err = h.evaluateSSHAccess(ident, ca, clusterName.GetClusterName(), h.c.TargetServer, conn.User())
 		} else {
 			proxyPermit, err = h.evaluateSSHProxying(ident, ca, clusterName.GetClusterName(), conn.User())
 		}
-	} else {
-		// the SSH server is a Teleport node, preform an RBAC check now
+	case teleport.ComponentNode:
+		diagnosticTracing = true
 		accessPermit, err = h.evaluateSSHAccess(ident, ca, clusterName.GetClusterName(), h.c.Server.GetInfo(), conn.User())
+	default:
+		return nil, trace.BadParameter("cannot determine appropriate authorization checks for unknown component %q (this is a bug)", h.c.Component)
 	}
+
 	if err != nil {
 		log.ErrorContext(ctx, "Permission denied", "error", err)
 		recordFailedLogin(err)
@@ -529,28 +541,39 @@ func (h *AuthHandlers) UserKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*s
 		permissions.Extensions[utils.ExtIntSSHAccessPermit] = string(encodedPermit)
 	}
 
-	if err := h.maybeAppendDiagnosticTrace(ctx, ident.ConnectionDiagnosticID,
-		types.ConnectionDiagnosticTrace_RBAC_NODE,
-		"You have access to the Node.",
-		nil,
-	); err != nil {
-		return nil, trace.Wrap(err)
+	if proxyPermit != nil {
+		encodedPermit, err := utils.FastMarshal(proxyPermit)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		permissions.Extensions[extIntSSHProxyingPermit] = string(encodedPermit)
 	}
 
-	if err := h.maybeAppendDiagnosticTrace(ctx, ident.ConnectionDiagnosticID,
-		types.ConnectionDiagnosticTrace_CONNECTIVITY,
-		"Node is alive and reachable.",
-		nil,
-	); err != nil {
-		return nil, trace.Wrap(err)
-	}
+	if diagnosticTracing {
+		if err := h.maybeAppendDiagnosticTrace(ctx, ident.ConnectionDiagnosticID,
+			types.ConnectionDiagnosticTrace_RBAC_NODE,
+			"You have access to the Node.",
+			nil,
+		); err != nil {
+			return nil, trace.Wrap(err)
+		}
 
-	if err := h.maybeAppendDiagnosticTrace(ctx, ident.ConnectionDiagnosticID,
-		types.ConnectionDiagnosticTrace_RBAC_PRINCIPAL,
-		"The requested principal is allowed.",
-		nil,
-	); err != nil {
-		return nil, trace.Wrap(err)
+		if err := h.maybeAppendDiagnosticTrace(ctx, ident.ConnectionDiagnosticID,
+			types.ConnectionDiagnosticTrace_CONNECTIVITY,
+			"Node is alive and reachable.",
+			nil,
+		); err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		if err := h.maybeAppendDiagnosticTrace(ctx, ident.ConnectionDiagnosticID,
+			types.ConnectionDiagnosticTrace_RBAC_PRINCIPAL,
+			"The requested principal is allowed.",
+			nil,
+		); err != nil {
+			return nil, trace.Wrap(err)
+		}
 	}
 
 	return permissions, nil
@@ -658,6 +681,8 @@ type ahLoginChecker struct {
 	c   *AuthHandlerConfig
 }
 
+const extIntSSHProxyingPermit = "proxying-permit"
+
 type sshProxyingPermit struct {
 	clientIdleTimeout time.Duration
 }
@@ -666,14 +691,19 @@ func (a *ahLoginChecker) evaluateSSHProxying(ident *sshca.Identity, ca types.Cer
 	// Use the server's shutdown context.
 	ctx := a.c.Server.Context()
 
-	a.log.DebugContext(ctx, "Checking basic proxying permissions", "teleport_user")
+	a.log.DebugContext(ctx, "Checking basic proxying permissions", "teleport_user", ident.Username, "os_user", osUser)
 
 	accessInfo, err := fetchAccessInfo(ident, ca, clusterName)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	accessChecker, err := services.NewAccessChecker(accessInfo, clusterName, h.c.AccessPoint)
+	accessChecker, err := services.NewAccessChecker(accessInfo, clusterName, a.c.AccessPoint)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	netConfig, err := a.c.AccessPoint.GetClusterNetworkingConfig(ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}

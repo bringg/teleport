@@ -198,6 +198,9 @@ type IdentityContext struct {
 	// AccessPermit encodes the parameters/constraints associated with an authorized ssh access.
 	AccessPermit *decisionpb.SSHAccessPermit
 
+	// ProxyingPermit encodes the parameters/constraints associated with an authorized proxying access.
+	ProxyingPermit *sshProxyingPermit
+
 	// TeleportUser is the Teleport user associated with the connection.
 	TeleportUser string
 
@@ -409,8 +412,14 @@ func NewServerContext(ctx context.Context, parent *sshutils.ConnectionContext, s
 		return nil, trace.Wrap(err)
 	}
 
-	if identityContext.AccessPermit == nil {
-		fmt.Printf("---> nil access permit: %+v\n", identityContext)
+	var clientIdleTimeout time.Duration
+	switch {
+	case identityContext.AccessPermit != nil:
+		clientIdleTimeout = durationToGoDuration(identityContext.AccessPermit.ClientIdleTimeout)
+	case identityContext.ProxyingPermit != nil:
+		clientIdleTimeout = identityContext.ProxyingPermit.clientIdleTimeout
+	default:
+		panic("identityContext must have either AccessPermit or ProxyingPermit set")
 	}
 
 	cancelContext, cancel := context.WithCancel(ctx)
@@ -424,7 +433,7 @@ func NewServerContext(ctx context.Context, parent *sshutils.ConnectionContext, s
 		ClusterName:            parent.ServerConn.Permissions.Extensions[utils.CertTeleportClusterName],
 		SessionRecordingConfig: recConfig,
 		Identity:               identityContext,
-		clientIdleTimeout:      durationToGoDuration(identityContext.AccessPermit.ClientIdleTimeout),
+		clientIdleTimeout:      clientIdleTimeout,
 		cancelContext:          cancelContext,
 		cancel:                 cancel,
 		ServerSubKind:          srv.TargetMetadata().ServerSubKind,
