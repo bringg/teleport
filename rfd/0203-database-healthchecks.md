@@ -600,8 +600,12 @@ N/A
 
 ### Test Plan
 
+- Dynamic health check configuration
+  - [ ] Dynamic `health_check_config` resource create, read, update, delete operations are supported using `tctl`
+  - [ ] Updating `health_check_config` resets `db_server.status.target_health.status` for matching databases
+  - [ ] Updating `health_check_config` db labels matcher, such that a database no longer matches the labels, resets that database's `db_server.status.target_health`
+  - [ ] Deleting `health_check_config` resets a formerly matched database's `db_server.status.target_health`
 - [ ] Configure a database agent with a static database with an unreachable uri and health checks enabled. The web UI resource page shows an `unhealthy` indicator/tooltip for that database.
   - [ ] Without restarting the agent, make the database endpoint reachable and observe that the indicator/tooltip in the web UI resources page disappears after some time.
 
 Pending approval of the proposed web UI changes, I may add other tests here for the UI features.
-
