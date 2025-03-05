@@ -240,21 +240,21 @@ Otherwise, the check has passed.
 
 Health checks will be an opt-out configurable setting with reasonable defaults.
 
-A new cluster resource will be added to manage health check settings: `health_check`.
+A new cluster resource will be added to manage health check settings: `health_check_config`.
 
-A `health_check` preset resource named "default" will be added.
+A `health_check_config` preset resource named "default" will be added.
 
-The "default" `health_check` preset will enable health checks for all databases.
+The "default" `health_check_config` preset will enable health checks for all databases.
 
-Users will be able to easily opt-out of health checks by setting `enabled: false` on the "default" `health_check`.
+Users will be able to easily opt-out of health checks by setting `enabled: false` on the "default" `health_check_config`.
 
-Teleport database agents will cache `health_check` resources.
+Teleport database agents will cache `health_check_config` resources.
 
 #### Configuration settings
 
-The `health_check` resource will expose the following settings:
+The `health_check_config` resource will expose the following settings:
 
-- MatchLabels: Resources with matching labels will use these health check settings.
+- Match: Resources with matching labels will use these health check settings.
 - Enabled: whether to enable health checks
 - Interval: time between each health check
 - Timeout: the health check connection attempt timeout (timing out fails the check)
@@ -264,13 +264,13 @@ The `health_check` resource will expose the following settings:
 These settings are sufficient to support TCP connection health checks in the initial implementation.
 They are also necessary for other types of health check, including TCP, TLS, and HTTP(S).
 Thus, they generalize well.
-Future work can extend `health_check` with more specific settings as needed to support new health check types.
+Future work can extend `health_check_config` with more specific settings as needed to support new health check types.
 
 #### Configuration label matching 
 
-The settings in a `health_check` resource will be used for a database if all of the labels in `health_check.spec.match_labels` match the database's labels.
+The settings in a `health_check_config` resource will be used for a database if all of the labels in `health_check_config.spec.match.db_labels` match the database's labels.
 
-If multiple `health_check` resources match a database, then the `health_check` resources will be sorted by name and only the first will apply.
+If multiple `health_check_config` resources match a database, then the `health_check_config` resources will be sorted by name and only the first will apply.
 
 #### Configuration restrictions and defaults
 
@@ -330,8 +330,8 @@ It makes sense to bias the health status to `unhealthy` when the network is unre
 
 #### Config example
 
-    $ tctl get health_check/default
-    kind: health_check
+    $ tctl get health_check_config/default
+    kind: health_check_config
     version: v3
     metadata:
       name: "default"
@@ -339,8 +339,11 @@ It makes sense to bias the health status to `unhealthy` when the network is unre
         teleport.internal/resource-type: preset
     spec:
       enabled: true
-      match_labels:
-        '*': '*'
+      match:
+        db_labels:
+          - name: '*'
+            values:
+            - '*'
       interval: 10s
       timeout: 5s
       healthy_threshold: 2
@@ -348,14 +351,18 @@ It makes sense to bias the health status to `unhealthy` when the network is unre
 
 #### Terraform config example
 
-    resource "teleport_health_check" "example" {
+    resource "teleport_health_check_config" "example" {
       version = "v3"
       metadata = {
         name = "example"
       }
       spec = {
         enabled = true
-        match_labels = {
+        match = {
+          db_labels = [{
+            name = "env"
+            values = ["dev"]
+          }]
           env = "dev"
         }
         healthy_threshold   = 1
@@ -367,9 +374,9 @@ It makes sense to bias the health status to `unhealthy` when the network is unre
 
 ### DB agent behavior
 
-DB agents will cache `health_check` resources.
+DB agents will cache `health_check_config` resources.
 
-When a DB agent begins proxying a database, the agent will get all `health_check` resources and determine which, if any, will apply to the database.
+When a DB agent begins proxying a database, the agent will get all `health_check_config` resources and determine which, if any, will apply to the database.
 
 If health checks are enabled for the database, then the agent will asynchronously start a health checker for that database.
 
@@ -383,9 +390,9 @@ When the database is deregistered from the agent, its health checker will be sto
 
 When the database is updated, it will be deregistered and then re-registered, effectively restarting its health checker and health status.
 
-DB agents will also watch `health_check` resources.
+DB agents will also watch `health_check_config` resources.
 
-When `health_check` resources are created, deleted, or updated, the DB agent will reevaluate the `health_check` label selectors for each registered database.
+When `health_check_config` resources are created, deleted, or updated, the DB agent will reevaluate the `health_check_config` label selectors for each registered database.
 
 If the health check settings for a database change, then its current health checker, if any, will be stopped, and a new health checker may be started.
 
@@ -498,23 +505,23 @@ N/A
 
 ### Proto Specification
 
-#### `health_check` resource
+#### `health_check_config` resource
 
-    // HealthCheck is the configuration for network health checks from an agent to
-    // its proxied resource.
-    message HealthCheck {
+    // HealthCheckConfig is the configuration for network health checks from an
+    // agent to its proxied resource.
+    message HealthCheckConfig {
       string kind = 1;
       string sub_kind = 2;
       string version = 3;
       teleport.header.v1.Metadata metadata = 4;
     
-      HealthCheckSpec spec = 5;
+      HealthCheckConfigSpec spec = 5;
     }
     
-    // HealthCheckSpec is the health check spec.
-    message HealthCheckSpec {
-      // MatchLabels is used to select resources that these settings apply to.
-      repeated teleport.label.v1.Label match_labels = 1;
+    // HealthCheckConfigSpec is the health check spec.
+    message HealthCheckConfigSpec {
+      // Match is used to select resources that these settings apply to.
+      Matcher match = 1;
       // Enabled determines if health checks are enabled for matching resources.
       bool enabled = 2;
       // Timeout is the health check connection establishment timeout.
@@ -529,6 +536,12 @@ N/A
       // which a target's health status becomes "unhealthy".
       uint32 unhealthy_threshold = 6;
     }
+    
+    // Matcher is a matcher for health check config.
+    message Matcher {
+      // DBLabels selects the databases to match.
+      repeated teleport.label.v1.Label db_labels = 1;
+    }
 
 #### Reporting health status in heartbeat
 
@@ -539,21 +552,25 @@ TargetHealth will be added as a field to the database heartbeat: `db_server.stat
     // TargetHealth describes the health status of network connectivity between
     // an agent and a resource.
     message TargetHealth {
-      // Addr is the target <ip:port>.
-      string addr = 1;
+      // Address is the target <ip:port>.
+      string Address = 1 [(gogoproto.jsontag) = "address,omitempty"];
       // Protocol is the health check protocol such as "tcp".
-      string protocol = 2;
-      // State is the health status, one of "", "init", "healthy", "unhealthy".
-      string status = 3;
+      string Protocol = 2 [(gogoproto.jsontag) = "protocol,omitempty"];
+      // Status is the health status, one of "", "init", "healthy", "unhealthy".
+      string Status = 3 [(gogoproto.jsontag) = "status,omitempty"];
       // TransitionTimestamp is the time that the last status transition occurred.
-      google.protobuf.Timestamp transition_timestamp = 4;
+      google.protobuf.Timestamp TransitionTimestamp = 4 [
+        (gogoproto.jsontag) = "transition_timestamp,omitempty",
+        (gogoproto.nullable) = true,
+        (gogoproto.stdtime) = true
+      ];
       // TransitionReason explains why the last transition occurred.
-      string transition_reason = 5;
+      string TransitionReason = 5 [(gogoproto.jsontag) = "transition_reason,omitempty"];
       // TransitionError shows the health check error observed when the transition
       // happened. Empty when transitioning to "healthy".
-      string transition_error = 6;
+      string TransitionError = 6 [(gogoproto.jsontag) = "transition_error,omitempty"];
       // Message is additional information meant for a user.
-      string message = 7;
+      string Message = 7 [(gogoproto.jsontag) = "message,omitempty"];
     }
 
 ### Backward Compatibility
