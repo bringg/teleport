@@ -1,6 +1,6 @@
 > ### Note: The purpose of this fork is to build images of the IncidentIO access plugin that are on par with the latest Teleport version. Once the plugin is officialy released we will move to the official version.
 
-##Building The Plugin:
+## Building The Plugin:
 1. Sync the fork with the desired release version from the upstream.
 2. Update the `TELEPORT_VERSION` argument in the file `integrations/access/Dockerfile` with the relevant version.
 3. From `integrations/access/incidentio`, run the command `make docker-build`.
