@@ -1,3 +1,14 @@
+> ### Note: The purpose of this fork is to build images of the IncidentIO access plugin that are on par with the latest Teleport version. Once the plugin is officialy released we will move to the official version.
+
+##Building The Plugin:
+1. Sync the fork with the desired release version from the upstream.
+2. Update the `TELEPORT_VERSION` argument in the file `integrations/access/Dockerfile` with the relevant version.
+3. From `integrations/access/incidentio`, run the command `make docker-build`.
+4. Tag the image, e.g. `docker tag "146628656107.dkr.ecr.us-west-2.amazonaws.com/gravitational/teleport-plugin-incidentio:<version>" bringg/teleport-plugin-incidentio:<version>`
+5. Push the image: `docker push bringg/teleport-plugin-incidentio:<version>`
+
+------------
+
 Teleport provides connectivity, authentication, access controls and audit for infrastructure.
 
 Here is why you might use Teleport:
