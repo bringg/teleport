@@ -20,7 +20,6 @@ package proxy
 
 import (
 	"context"
-	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -759,8 +758,8 @@ func TestAuthenticate(t *testing.T) {
 			require.NoError(t, err)
 
 			require.Empty(t, cmp.Diff(gotCtx, tt.wantCtx,
-				cmp.AllowUnexported(authContext{}, teleportClusterClient{}, apiResource{}),
-				cmpopts.IgnoreFields(authContext{}, "clientIdleTimeout", "sessionTTL", "Context", "recordingConfig", "disconnectExpiredCert", "kubeCluster", "apiResource"),
+				cmp.AllowUnexported(authContext{}, teleportClusterClient{}, metaResource{}, apiResource{}),
+				cmpopts.IgnoreFields(authContext{}, "clientIdleTimeout", "sessionTTL", "Context", "recordingConfig", "disconnectExpiredCert", "kubeCluster"),
 			))
 
 			// validate authCtx.key() to make sure it includes certExpires timestamp.
@@ -931,7 +930,6 @@ func TestSetupImpersonationHeaders(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.desc, func(t *testing.T) {
 			var kubeCreds kubeCreds
 			if !tt.isProxy {
@@ -1107,7 +1105,7 @@ func newMockForwader(ctx context.Context, t *testing.T) *Forwarder {
 		Clock: clock,
 	})
 	require.NoError(t, err)
-	csrClient, err := newMockCSRClient(clock)
+	caClient, err := newMockCAClient()
 	require.NoError(t, err)
 
 	return &Forwarder{
@@ -1115,7 +1113,7 @@ func newMockForwader(ctx context.Context, t *testing.T) *Forwarder {
 		router: httprouter.New(),
 		cfg: ForwarderConfig{
 			Keygen:            testauthority.New(),
-			AuthClient:        csrClient,
+			AuthClient:        caClient,
 			CachingAuthClient: mockAccessPoint{},
 			Clock:             clock,
 			Context:           ctx,
@@ -1129,27 +1127,18 @@ func newMockForwader(ctx context.Context, t *testing.T) *Forwarder {
 	}
 }
 
-// mockCSRClient to intercept ProcessKubeCSR requests, record them and return a
+// mockCAClient to intercept GetCertAuthority requests, record them and return a
 // stub response.
-type mockCSRClient struct {
+type mockCAClient struct {
 	authclient.ClientI
-
-	clock           clockwork.Clock
-	ca              *tlsca.CertAuthority
-	gotCSR          authclient.KubeCSR
-	lastCert        *x509.Certificate
 	leafClusterName string
 }
 
-func newMockCSRClient(clock clockwork.Clock) (*mockCSRClient, error) {
-	ca, err := tlsca.FromKeys([]byte(fixtures.TLSCACertPEM), []byte(fixtures.TLSCAKeyPEM))
-	if err != nil {
-		return nil, err
-	}
-	return &mockCSRClient{ca: ca, clock: clock}, nil
+func newMockCAClient() (*mockCAClient, error) {
+	return &mockCAClient{}, nil
 }
 
-func (c *mockCSRClient) GetCertAuthority(ctx context.Context, id types.CertAuthID, loadKeys bool) (types.CertAuthority, error) {
+func (c *mockCAClient) GetCertAuthority(ctx context.Context, id types.CertAuthID, loadKeys bool) (types.CertAuthority, error) {
 	if id.DomainName == c.leafClusterName {
 		return &types.CertAuthorityV2{
 			Kind:    types.KindCertAuthority,
@@ -1167,36 +1156,6 @@ func (c *mockCSRClient) GetCertAuthority(ctx context.Context, id types.CertAuthI
 		}, nil
 	}
 	return nil, trace.NotFound("cluster not found")
-}
-
-func (c *mockCSRClient) ProcessKubeCSR(csr authclient.KubeCSR) (*authclient.KubeCSRResponse, error) {
-	c.gotCSR = csr
-
-	x509CSR, err := tlsca.ParseCertificateRequestPEM(csr.CSR)
-	if err != nil {
-		return nil, err
-	}
-	caCSR := tlsca.CertificateRequest{
-		Clock:     c.clock,
-		PublicKey: x509CSR.PublicKey.(crypto.PublicKey),
-		Subject:   x509CSR.Subject,
-		// getClientCreds requires sessions to be valid for at least 1 minute
-		NotAfter: c.clock.Now().Add(2 * time.Minute),
-		DNSNames: x509CSR.DNSNames,
-	}
-	cert, err := c.ca.GenerateCertificate(caCSR)
-	if err != nil {
-		return nil, err
-	}
-	c.lastCert, err = tlsca.ParseCertificatePEM(cert)
-	if err != nil {
-		return nil, err
-	}
-	return &authclient.KubeCSRResponse{
-		Cert:            cert,
-		CertAuthorities: [][]byte{[]byte(fixtures.TLSCACertPEM)},
-		TargetAddr:      "mock addr",
-	}, nil
 }
 
 // mockRemoteSite is a reversetunnelclient.RemoteSite implementation with hardcoded
@@ -1347,8 +1306,7 @@ func (m *mockSemaphoreClient) GetRole(ctx context.Context, name string) (types.R
 }
 
 func TestKubernetesConnectionLimit(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	type testCase struct {
 		name        string
@@ -1503,7 +1461,7 @@ func TestKubernetesLicenseEnforcement(t *testing.T) {
 					string(entitlements.K8s): {Enabled: false},
 				},
 			},
-			assertErrFunc: func(tt require.TestingT, err error, i ...interface{}) {
+			assertErrFunc: func(tt require.TestingT, err error, i ...any) {
 				require.Error(tt, err)
 				var kubeErr *kubeerrors.StatusError
 				require.ErrorAs(tt, err, &kubeErr)
@@ -1514,7 +1472,6 @@ func TestKubernetesLicenseEnforcement(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			// creates a Kubernetes service with a configured cluster pointing to mock api server
@@ -1652,8 +1609,7 @@ func TestForwarderTLSConfigCAs(t *testing.T) {
 	certPool.AddCert(caCert)
 
 	// create the auth server mock client
-	clock := clockwork.NewFakeClock()
-	cl, err := newMockCSRClient(clock)
+	cl, err := newMockCAClient()
 	require.NoError(t, err)
 	cl.leafClusterName = clusterName
 

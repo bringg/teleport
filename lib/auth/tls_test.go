@@ -31,6 +31,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -80,8 +81,7 @@ import (
 )
 
 func TestRejectedClients(t *testing.T) {
-	t.Setenv("TELEPORT_UNSTABLE_REJECT_OLD_CLIENTS", "yes")
-
+	t.Parallel()
 	server, err := NewTestAuthServer(TestAuthServerConfig{
 		Dir:         t.TempDir(),
 		ClusterName: "cluster",
@@ -111,7 +111,7 @@ func TestRejectedClients(t *testing.T) {
 	defer clt.Close()
 
 	t.Run("reject old version", func(t *testing.T) {
-		version := teleport.MinClientSemVersion
+		version := teleport.MinClientSemVer()
 		version.Major--
 		ctx := context.WithValue(context.Background(), metadata.DisableInterceptors{}, struct{}{})
 		ctx = metadata.AddMetadataToContext(ctx, map[string]string{
@@ -123,9 +123,9 @@ func TestRejectedClients(t *testing.T) {
 	})
 
 	t.Run("allow valid versions", func(t *testing.T) {
-		version := teleport.MinClientSemVersion
+		version := teleport.MinClientSemVer()
 		version.Major--
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			version.Major++
 
 			ctx := context.WithValue(context.Background(), metadata.DisableInterceptors{}, struct{}{})
@@ -697,6 +697,7 @@ func TestRollback(t *testing.T) {
 	// create proxy client just for test purposes
 	proxy, err := testSrv.NewClient(TestBuiltin(types.RoleProxy))
 	require.NoError(t, err)
+	defer proxy.Close()
 
 	// client works before rotation is initiated
 	_, err = proxy.GetNodes(ctx, apidefaults.Namespace)
@@ -726,9 +727,12 @@ func TestRollback(t *testing.T) {
 	// new clients work
 	newProxy, err := testSrv.NewClient(TestBuiltin(types.RoleProxy))
 	require.NoError(t, err)
+	defer newProxy.Close()
 
-	_, err = newProxy.GetNodes(ctx, apidefaults.Namespace)
-	require.NoError(t, err)
+	require.EventuallyWithT(t, func(ct *assert.CollectT) {
+		_, err = testSrv.CloneClient(t, newProxy).GetNodes(ctx, apidefaults.Namespace)
+		assert.NoError(ct, err)
+	}, 15*time.Second, 100*time.Millisecond)
 
 	// advance rotation:
 	err = testSrv.Auth().RotateCertAuthority(ctx, types.RotateRequest{
@@ -772,17 +776,13 @@ func TestRollback(t *testing.T) {
 	require.NoError(t, err)
 
 	// clients with new creds will no longer work as soon as backend modification event propagates.
-	require.Eventually(t, func() bool {
+	require.EventuallyWithT(t, func(ct *assert.CollectT) {
 		_, err := testSrv.CloneClient(t, newProxy).GetNodes(ctx, apidefaults.Namespace)
-		return err != nil
-	}, time.Second*15, time.Millisecond*200)
+		assert.Error(ct, err)
+	}, time.Second*15, time.Millisecond*100)
 
-	grpcClientOld := testSrv.CloneClient(t, proxy)
-	t.Cleanup(func() {
-		require.NoError(t, grpcClientOld.Close())
-	})
 	// clients with old creds will still work
-	_, err = grpcClientOld.GetNodes(ctx, apidefaults.Namespace)
+	_, err = testSrv.CloneClient(t, proxy).GetNodes(ctx, apidefaults.Namespace)
 	require.NoError(t, err)
 }
 
@@ -1478,20 +1478,6 @@ func TestAppServerCRUD(t *testing.T) {
 	suite.AppServerCRUD(t)
 }
 
-func TestReverseTunnelsCRUD(t *testing.T) {
-	t.Parallel()
-
-	testSrv := newTestTLSServer(t)
-
-	clt, err := testSrv.NewClient(TestAdmin())
-	require.NoError(t, err)
-
-	suite := &suite.ServicesTestSuite{
-		PresenceS: clt,
-	}
-	suite.ReverseTunnelsCRUD(t)
-}
-
 func TestUsersCRUD(t *testing.T) {
 	t.Parallel()
 
@@ -1899,7 +1885,6 @@ func TestWebSessionMultiAccessRequests(t *testing.T) {
 			expectRoles: []string{baseRoleName},
 		},
 	} {
-		tc := tc
 		t.Run(tc.desc, func(t *testing.T) {
 			t.Parallel()
 			clt, sess := baseWebClient, baseWebSession
@@ -2837,13 +2822,7 @@ func TestGenerateCerts(t *testing.T) {
 			expectSSHCertPublicKey equalPublicKey
 		}{
 			{
-				desc:                   "legacy",
-				publicKey:              sshPubKey,
-				tlsPrivateKey:          sshPrivKey,
-				expectSSHCertPublicKey: sshEqualPub,
-			},
-			{
-				desc:                   "split",
+				desc:                   "both keys",
 				sshPublicKey:           sshPubKey,
 				tlsPublicKey:           tlsPubKey,
 				tlsPrivateKey:          tlsPrivKey,
@@ -2868,7 +2847,6 @@ func TestGenerateCerts(t *testing.T) {
 				t.Parallel()
 
 				certs, err := userClient2.GenerateUserCerts(ctx, proto.UserCertsRequest{
-					PublicKey:    tc.publicKey, //nolint:staticcheck // SA1019: testing the deprecated field.
 					SSHPublicKey: tc.sshPublicKey,
 					TLSPublicKey: tc.tlsPublicKey,
 					Username:     user2.GetName(),
@@ -3289,7 +3267,7 @@ func TestChangeUserAuthenticationSettings(t *testing.T) {
 	t.Run("Reset link not allowed when user does not exist", func(t *testing.T) {
 		var tokenID string
 		var resp *proto.MFARegisterResponse
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			token, err := testSrv.Auth().CreateResetPasswordToken(ctx, authclient.CreateUserTokenRequest{
 				Name: username,
 				TTL:  time.Hour,
@@ -3378,6 +3356,7 @@ func TestLoginNoLocalAuth(t *testing.T) {
 // not connect.
 func TestCipherSuites(t *testing.T) {
 	testSrv := newTestTLSServer(t)
+	ctx := context.Background()
 
 	otherServer, err := testSrv.AuthServer.NewTestTLSServer()
 	require.NoError(t, err)
@@ -3405,7 +3384,7 @@ func TestCipherSuites(t *testing.T) {
 	require.NoError(t, err)
 
 	// Requests should fail.
-	_, err = client.GetClusterName()
+	_, err = client.GetClusterName(ctx)
 	require.Error(t, err)
 }
 
@@ -3437,7 +3416,7 @@ func TestTLSFailover(t *testing.T) {
 	require.NoError(t, err)
 
 	// couple of runs to get enough connections
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		_, err = client.Get(ctx, client.Endpoint("not", "exist"), url.Values{})
 		require.True(t, trace.IsNotFound(err))
 	}
@@ -3447,7 +3426,7 @@ func TestTLSFailover(t *testing.T) {
 	require.NoError(t, err)
 
 	// client detects closed sockets and reconnect to the backup server
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		_, err = client.Get(ctx, client.Endpoint("not", "exist"), url.Values{})
 		require.True(t, trace.IsNotFound(err))
 	}
@@ -3640,8 +3619,7 @@ func TestRegisterCAPath(t *testing.T) {
 func TestClusterAlertAck(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	testSrv := newTestTLSServer(t)
 
@@ -3685,8 +3663,7 @@ func TestClusterAlertAck(t *testing.T) {
 func TestClusterAlertClearAckWildcard(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	testSrv := newTestTLSServer(t)
 
@@ -3744,17 +3721,14 @@ func TestClusterAlertClearAckWildcard(t *testing.T) {
 func TestClusterAlertAccessControls(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	testSrv := newTestTLSServer(t)
 
 	expectAlerts := func(alerts []types.ClusterAlert, names ...string) {
 		for _, alert := range alerts {
-			for _, name := range names {
-				if alert.Metadata.Name == name {
-					return
-				}
+			if slices.Contains(names, alert.Metadata.Name) {
+				return
 			}
 			t.Fatalf("unexpected alert %q", alert.Metadata.Name)
 		}
@@ -4275,7 +4249,7 @@ func TestEventsClusterConfig(t *testing.T) {
 	suite.ExpectResource(t, w, 3*time.Second, auditConfigResource)
 
 	// update cluster name resource metadata
-	clusterNameResource, err := testSrv.Auth().GetClusterName()
+	clusterNameResource, err := testSrv.Auth().GetClusterName(ctx)
 	require.NoError(t, err)
 
 	// update the resource with different labels to test the change
@@ -4297,7 +4271,7 @@ func TestEventsClusterConfig(t *testing.T) {
 	err = testSrv.Auth().SetClusterName(clusterName)
 	require.NoError(t, err)
 
-	clusterNameResource, err = testSrv.Auth().GetClusterName()
+	clusterNameResource, err = testSrv.Auth().GetClusterName(ctx)
 	require.NoError(t, err)
 	suite.ExpectResource(t, w, 3*time.Second, clusterNameResource)
 }
@@ -4338,7 +4312,7 @@ func mustNewTokenFromSpec(
 	return tok
 }
 
-func requireAccessDenied(t require.TestingT, err error, i ...interface{}) {
+func requireAccessDenied(t require.TestingT, err error, i ...any) {
 	require.True(
 		t,
 		trace.IsAccessDenied(err),
@@ -4346,7 +4320,7 @@ func requireAccessDenied(t require.TestingT, err error, i ...interface{}) {
 	)
 }
 
-func requireBadParameter(t require.TestingT, err error, i ...interface{}) {
+func requireBadParameter(t require.TestingT, err error, i ...any) {
 	require.True(
 		t,
 		trace.IsBadParameter(err),
@@ -4354,7 +4328,7 @@ func requireBadParameter(t require.TestingT, err error, i ...interface{}) {
 	)
 }
 
-func requireNotFound(t require.TestingT, err error, i ...interface{}) {
+func requireNotFound(t require.TestingT, err error, i ...any) {
 	require.True(
 		t,
 		trace.IsNotFound(err),
@@ -4476,7 +4450,7 @@ func TestGRPCServer_CreateTokenV2(t *testing.T) {
 			name:     "already exists",
 			identity: TestUser(privilegedUser.GetName()),
 			token:    alreadyExistsToken,
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(
 					t,
 					trace.IsAlreadyExists(err),

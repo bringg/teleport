@@ -325,7 +325,7 @@ func TestAccessList_EntitlementLimits(t *testing.T) {
 
 					// ALSO GIVEN a number of pre-created AccessLists...
 					var preCreatedACLs []*accesslist.AccessList
-					for i := 0; i < tc.existingACLCount; i++ {
+					for i := range tc.existingACLCount {
 						// note that we write these setup resources directly to the back-end
 						// service in order to bypass any limit enforcement. This lets us
 						// set up a wider range of interesting test cases
@@ -407,7 +407,7 @@ func TestAccessListDedupeOwnersBackwardsCompat(t *testing.T) {
 	accessListDuplicateOwners.Spec.Owners = append(accessListDuplicateOwners.Spec.Owners, accessListDuplicateOwners.Spec.Owners[0])
 	require.Len(t, accessListDuplicateOwners.Spec.Owners, 3)
 
-	item, err := service.service.MakeBackendItem(accessListDuplicateOwners, accessListDuplicateOwners.GetName())
+	item, err := service.service.MakeBackendItem(accessListDuplicateOwners)
 	require.NoError(t, err)
 	_, err = mem.Put(ctx, item)
 	require.NoError(t, err)
@@ -490,7 +490,6 @@ func TestAccessListUpsertWithMembers(t *testing.T) {
 		require.NoError(t, err)
 		require.Empty(t, members)
 	})
-
 }
 
 func TestAccessListMembersCRUD(t *testing.T) {
@@ -1010,7 +1009,6 @@ func TestAccessListRequiresEqual(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			require.Equal(t, test.expected, accessListRequiresEqual(test.a, test.b))
 		})
@@ -1153,12 +1151,12 @@ func TestAccessListService_ListAllAccessListMembers(t *testing.T) {
 
 	// Create several access lists.
 	expectedMembers := make([]*accesslist.AccessListMember, totalMembers)
-	for i := 0; i < numAccessLists; i++ {
+	for i := range numAccessLists {
 		alName := strconv.Itoa(i)
 		_, err := service.UpsertAccessList(ctx, newAccessList(t, alName, clock))
 		require.NoError(t, err)
 
-		for j := 0; j < numAccessListMembersPerAccessList; j++ {
+		for j := range numAccessListMembersPerAccessList {
 			member := newAccessListMember(t, alName, fmt.Sprintf("%03d", j))
 			expectedMembers[i*numAccessListMembersPerAccessList+j] = member
 			_, err := service.UpsertAccessListMember(ctx, member)
@@ -1202,12 +1200,12 @@ func TestAccessListService_ListAllAccessListReviews(t *testing.T) {
 
 	// Create several access lists.
 	expectedReviews := make([]*accesslist.Review, totalReviews)
-	for i := 0; i < numAccessLists; i++ {
+	for i := range numAccessLists {
 		alName := strconv.Itoa(i)
 		_, err := service.UpsertAccessList(ctx, newAccessList(t, alName, clock))
 		require.NoError(t, err)
 
-		for j := 0; j < numAccessListReviewsPerAccessList; j++ {
+		for j := range numAccessListReviewsPerAccessList {
 			review, err := accesslist.NewReview(
 				header.Metadata{
 					Name: strconv.Itoa(j),

@@ -143,6 +143,11 @@ type AccessList struct {
 
 // Spec is the specification for an access list.
 type Spec struct {
+	// Type can be currently "dynamic" (the default if empty string) which denotes a regular
+	// Access List, "scim" which represents an Access List created from SCIM group or "static"
+	// for Access Lists managed by IaC tools.
+	Type Type `json:"type" yaml:"type"`
+
 	// Title is a plaintext short description of the access list.
 	Title string `json:"title" yaml:"title"`
 
@@ -170,6 +175,45 @@ type Spec struct {
 
 	// OwnerGrants describes the access granted by ownership of this access list.
 	OwnerGrants Grants `json:"owner_grants" yaml:"owner_grants"`
+}
+
+type Type string
+
+const (
+	// ImplicitDynamic type is for backward compatibility. It has the same semantics as
+	// [Dynamic].
+	ImplicitDynamic Type = ""
+	// Dynamic Access Lists are the default type supposed to be managed with the web UI. They
+	// require periodic audit reviews.
+	Dynamic Type = "dynamic"
+	// Static Access Lists are supposed to be managed with the IaC tools like Terraform. Audit
+	// reviews are not supported for them and the ownership is optional.
+	Static Type = "static"
+	// SCIM Access Lists are created with the SCIM integration. Audit reviews are not supported
+	// for them and the ownership is optional.
+	SCIM Type = "scim"
+)
+
+func NewTypeFromString(s string) (Type, error) {
+	switch s {
+	case string(ImplicitDynamic), string(Dynamic):
+		return Dynamic, nil
+	case string(Static):
+		return Static, nil
+	case string(SCIM):
+		return SCIM, nil
+	default:
+		return "", trace.BadParameter("unknown access_list type %q", s)
+	}
+}
+
+// IsReviewable returns true if the AccessList type supports the audit reviews in the web UI.
+func (t Type) IsReviewable() bool {
+	switch t {
+	case ImplicitDynamic, Dynamic:
+		return true
+	}
+	return false
 }
 
 // Owner is an owner of an access list.
@@ -251,6 +295,27 @@ type Status struct {
 	OwnerOf []string `json:"owner_of" yaml:"owner_of"`
 	// MemberOf is a list of Access List UUIDs where this access list is an explicit member.
 	MemberOf []string `json:"member_of" yaml:"member_of"`
+
+	// CurrentUserAssignments describes the current user's ownership and membership in the access list.
+	CurrentUserAssignments *CurrentUserAssignments `json:"-" yaml:"-"`
+}
+
+// CurrentUserAssignments describes the current user's ownership and membership status in the access list.
+type CurrentUserAssignments struct {
+	// OwnershipType represents the current user's ownership type (explicit, inherited, or none) in the access list.
+	OwnershipType accesslistv1.AccessListUserAssignmentType `json:"ownership_type" yaml:"ownership_type"`
+	// MembershipType represents the current user's membership type (explicit, inherited, or none) in the access list.
+	MembershipType accesslistv1.AccessListUserAssignmentType `json:"membership_type" yaml:"membership_type"`
+}
+
+// IsMember returns true if the MembershipType is either explicit or inherited.
+func (c *CurrentUserAssignments) IsMember() bool {
+	return c.MembershipType != accesslistv1.AccessListUserAssignmentType_ACCESS_LIST_USER_ASSIGNMENT_TYPE_UNSPECIFIED
+}
+
+// IsOwner returns true if the OwnershipType is either explicit or inherited.
+func (c *CurrentUserAssignments) IsOwner() bool {
+	return c.OwnershipType != accesslistv1.AccessListUserAssignmentType_ACCESS_LIST_USER_ASSIGNMENT_TYPE_UNSPECIFIED
 }
 
 // NewAccessList will create a new access list.
@@ -276,40 +341,57 @@ func (a *AccessList) CheckAndSetDefaults() error {
 		return trace.Wrap(err)
 	}
 
+	if _, err := NewTypeFromString(string(a.Spec.Type)); err != nil {
+		return trace.Wrap(err)
+	}
+
 	if a.Spec.Title == "" {
 		return trace.BadParameter("access list title required")
 	}
 
-	if len(a.Spec.Owners) == 0 {
-		return trace.BadParameter("owners are missing")
-	}
-
-	if a.Spec.Audit.Recurrence.Frequency == 0 {
-		a.Spec.Audit.Recurrence.Frequency = SixMonths
-	}
-
-	switch a.Spec.Audit.Recurrence.Frequency {
-	case OneMonth, ThreeMonths, SixMonths, OneYear:
+	switch a.Spec.Type {
+	case Static, SCIM:
+		// SCIM and Static access lists can have empty owners, as they are managed by external systems.
 	default:
-		return trace.BadParameter("recurrence frequency is an invalid value")
+		if len(a.Spec.Owners) == 0 {
+			return trace.BadParameter("owners are missing")
+		}
 	}
 
-	if a.Spec.Audit.Recurrence.DayOfMonth == 0 {
-		a.Spec.Audit.Recurrence.DayOfMonth = FirstDayOfMonth
-	}
+	if a.IsReviewable() {
+		if a.Spec.Audit.Recurrence.Frequency == 0 {
+			a.Spec.Audit.Recurrence.Frequency = SixMonths
+		}
 
-	switch a.Spec.Audit.Recurrence.DayOfMonth {
-	case FirstDayOfMonth, FifteenthDayOfMonth, LastDayOfMonth:
-	default:
-		return trace.BadParameter("recurrence day of month is an invalid value")
-	}
+		switch a.Spec.Audit.Recurrence.Frequency {
+		case OneMonth, ThreeMonths, SixMonths, OneYear:
+		default:
+			return trace.BadParameter("recurrence frequency is an invalid value")
+		}
 
-	if a.Spec.Audit.NextAuditDate.IsZero() {
-		a.setInitialAuditDate(clockwork.NewRealClock())
-	}
+		if a.Spec.Audit.Recurrence.DayOfMonth == 0 {
+			a.Spec.Audit.Recurrence.DayOfMonth = FirstDayOfMonth
+		}
 
-	if a.Spec.Audit.Notifications.Start == 0 {
-		a.Spec.Audit.Notifications.Start = twoWeeks
+		switch a.Spec.Audit.Recurrence.DayOfMonth {
+		case FirstDayOfMonth, FifteenthDayOfMonth, LastDayOfMonth:
+		default:
+			return trace.BadParameter("recurrence day of month is an invalid value")
+		}
+
+		if a.Spec.Audit.NextAuditDate.IsZero() {
+			if err := a.setInitialAuditDate(clockwork.NewRealClock()); err != nil {
+				return trace.Wrap(err, "setting initial audit date")
+			}
+		}
+
+		if a.Spec.Audit.Notifications.Start == 0 {
+			a.Spec.Audit.Notifications.Start = twoWeeks
+		}
+	} else {
+		if !isZero(a.Spec.Audit) {
+			return trace.BadParameter("audit not supported for non-dynamic access_list")
+		}
 	}
 
 	// Deduplicate owners. The backend will currently prevent this, but it's possible that access lists
@@ -373,6 +455,11 @@ func (a *AccessList) GetMetadata() types.Metadata {
 	return legacy.FromHeaderMetadata(a.Metadata)
 }
 
+// GetStatus returns the status of the access list.
+func (a *AccessList) GetStatus() Status {
+	return a.Status
+}
+
 // MatchSearch goes through select field values of a resource
 // and tries to match against the list of search values.
 func (a *AccessList) MatchSearch(values []string) bool {
@@ -380,8 +467,8 @@ func (a *AccessList) MatchSearch(values []string) bool {
 	return types.MatchSearch(fieldVals, values, nil)
 }
 
-// CloneResource returns a copy of the resource as types.ResourceWithLabels.
-func (a *AccessList) CloneResource() types.ResourceWithLabels {
+// Clone returns a copy of the list.
+func (a *AccessList) Clone() *AccessList {
 	var copy *AccessList
 	utils.StrictObjectToStruct(a, &copy)
 	return copy
@@ -484,8 +571,17 @@ func (n Notifications) MarshalJSON() ([]byte, error) {
 	})
 }
 
+// IsReviewable returns true if the AccessList type supports the audit reviews in the web UI.
+func (a *AccessList) IsReviewable() bool {
+	return a.Spec.Type.IsReviewable()
+}
+
 // SelectNextReviewDate will select the next review date for the access list.
-func (a *AccessList) SelectNextReviewDate() time.Time {
+func (a *AccessList) SelectNextReviewDate() (time.Time, error) {
+	if !a.IsReviewable() {
+		return time.Time{}, trace.BadParameter("access_list %q is not reviewable", a.GetName())
+	}
+
 	numMonths := int(a.Spec.Audit.Recurrence.Frequency)
 	dayOfMonth := int(a.Spec.Audit.Recurrence.DayOfMonth)
 
@@ -500,15 +596,16 @@ func (a *AccessList) SelectNextReviewDate() time.Time {
 	nextDate := time.Date(currentReviewDate.Year(), currentReviewDate.Month()+time.Month(numMonths), dayOfMonth,
 		0, 0, 0, 0, time.UTC)
 
-	return nextDate
+	return nextDate, nil
 }
 
 // setInitialAuditDate sets the NextAuditDate for a newly created AccessList.
 // The function is extracted from CheckAndSetDefaults for the sake of testing
 // (we need to pass a fake clock).
-func (a *AccessList) setInitialAuditDate(clock clockwork.Clock) {
+func (a *AccessList) setInitialAuditDate(clock clockwork.Clock) (err error) {
 	// We act as if the AccessList just got reviewed (we just created it, so
 	// we're pretty sure of what it does) and pick the next review date.
 	a.Spec.Audit.NextAuditDate = clock.Now()
-	a.Spec.Audit.NextAuditDate = a.SelectNextReviewDate()
+	a.Spec.Audit.NextAuditDate, err = a.SelectNextReviewDate()
+	return trace.Wrap(err)
 }

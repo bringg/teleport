@@ -22,6 +22,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -36,11 +37,13 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiproto "github.com/gravitational/teleport/api/client/proto"
@@ -55,6 +58,7 @@ import (
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/auth/authclient"
 	"github.com/gravitational/teleport/lib/auth/join"
+	"github.com/gravitational/teleport/lib/auth/machineid/workloadidentityv1"
 	"github.com/gravitational/teleport/lib/auth/state"
 	"github.com/gravitational/teleport/lib/cryptosuites"
 	libevents "github.com/gravitational/teleport/lib/events"
@@ -71,7 +75,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func newTestTLSServer(t testing.TB) (*auth.TestTLSServer, *eventstest.MockRecorderEmitter) {
+func newTestTLSServer(t testing.TB, opts ...auth.TestTLSServerOption) (*auth.TestTLSServer, *eventstest.MockRecorderEmitter) {
 	as, err := auth.NewTestAuthServer(auth.TestAuthServerConfig{
 		Dir:   t.TempDir(),
 		Clock: clockwork.NewFakeClockAt(time.Now().Round(time.Second).UTC()),
@@ -79,9 +83,10 @@ func newTestTLSServer(t testing.TB) (*auth.TestTLSServer, *eventstest.MockRecord
 	require.NoError(t, err)
 
 	emitter := &eventstest.MockRecorderEmitter{}
-	srv, err := as.NewTestTLSServer(func(config *auth.TestTLSServerConfig) {
+	opts = append(opts, func(config *auth.TestTLSServerConfig) {
 		config.APIConfig.Emitter = emitter
 	})
+	srv, err := as.NewTestTLSServer(opts...)
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
@@ -96,9 +101,10 @@ func newTestTLSServer(t testing.TB) (*auth.TestTLSServer, *eventstest.MockRecord
 }
 
 type issuanceTestPack struct {
-	srv           *auth.TestTLSServer
-	eventRecorder *eventstest.MockRecorderEmitter
-	clock         clockwork.Clock
+	srv                     *auth.TestTLSServer
+	eventRecorder           *eventstest.MockRecorderEmitter
+	clock                   clockwork.Clock
+	sigstorePolicyEvaluator *mockSigstorePolicyEvaluator
 
 	issuer             string
 	spiffeX509CAPool   *x509.CertPool
@@ -139,15 +145,37 @@ func newIssuanceTestPack(t *testing.T, ctx context.Context) *issuanceTestPack {
 	kid, err := libjwt.KeyID(jwtSigner.Public())
 	require.NoError(t, err)
 
+	sigstorePolicyEvaluator := newMockSigstorePolicyEvaluator(t)
+	srv.Auth().SetSigstorePolicyEvaluator(sigstorePolicyEvaluator)
+
 	return &issuanceTestPack{
-		srv:                srv,
-		eventRecorder:      eventRecorder,
-		clock:              clock,
-		issuer:             wantIssuer,
-		spiffeX509CAPool:   spiffeX509CAPool,
-		spiffeJWTSigner:    jwtSigner,
-		spiffeJWTSignerKID: kid,
+		srv:                     srv,
+		eventRecorder:           eventRecorder,
+		clock:                   clock,
+		sigstorePolicyEvaluator: sigstorePolicyEvaluator,
+		issuer:                  wantIssuer,
+		spiffeX509CAPool:        spiffeX509CAPool,
+		spiffeJWTSigner:         jwtSigner,
+		spiffeJWTSignerKID:      kid,
 	}
+}
+
+func newMockSigstorePolicyEvaluator(t *testing.T) *mockSigstorePolicyEvaluator {
+	t.Helper()
+
+	eval := new(mockSigstorePolicyEvaluator)
+	t.Cleanup(func() { _ = eval.AssertExpectations(t) })
+
+	return eval
+}
+
+type mockSigstorePolicyEvaluator struct {
+	mock.Mock
+}
+
+func (m *mockSigstorePolicyEvaluator) Evaluate(ctx context.Context, policyNames []string, attrs *workloadidentityv1pb.Attrs) (map[string]error, error) {
+	result := m.Called(ctx, policyNames, attrs)
+	return result.Get(0).(map[string]error), result.Error(1)
 }
 
 // TestIssueWorkloadIdentityE2E performs a more E2E test than the RPC specific
@@ -391,6 +419,34 @@ func TestIssueWorkloadIdentity(t *testing.T) {
 	specificAccessClient, err := tp.srv.NewClient(auth.TestUser(specificAccess.GetName()))
 	require.NoError(t, err)
 
+	traitAccess, _, err := auth.CreateUserAndRole(
+		tp.srv.Auth(),
+		"traity",
+		[]string{},
+		[]types.Rule{
+			types.NewRule(
+				types.KindWorkloadIdentity,
+				[]string{types.VerbRead, types.VerbList},
+			),
+		},
+		auth.WithUserMutator(func(user types.User) {
+			tr := user.GetTraits()
+			if tr == nil {
+				tr = map[string][]string{}
+			}
+			tr["custom"] = []string{"trait-value-a", "trait-value-b"}
+			user.SetTraits(tr)
+		}),
+		auth.WithRoleMutator(func(role types.Role) {
+			role.SetWorkloadIdentityLabels(types.Allow, types.Labels{
+				"trait-label": []string{"{{external.custom}}"},
+			})
+		}),
+	)
+	require.NoError(t, err)
+	traitAccessClient, err := tp.srv.NewClient(auth.TestUser(traitAccess.GetName()))
+	require.NoError(t, err)
+
 	// Generate a keypair to generate x509 SVIDs for.
 	workloadKey, err := cryptosuites.GenerateKeyWithAlgorithm(cryptosuites.ECDSAP256)
 	require.NoError(t, err)
@@ -464,6 +520,95 @@ func TestIssueWorkloadIdentity(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	extraClaimTemplates, err := structpb.NewStruct(map[string]any{
+		"user_name": "{{user.name}}",
+		"k8s": map[string]any{
+			"names": []any{"{{workload.kubernetes.pod_name}}"},
+		},
+	})
+	require.NoError(t, err)
+
+	extraClaims, err := tp.srv.Auth().CreateWorkloadIdentity(ctx, &workloadidentityv1pb.WorkloadIdentity{
+		Kind:    types.KindWorkloadIdentity,
+		Version: types.V1,
+		Metadata: &headerv1.Metadata{
+			Name: "extra-claims",
+		},
+		Spec: &workloadidentityv1pb.WorkloadIdentitySpec{
+			Spiffe: &workloadidentityv1pb.WorkloadIdentitySPIFFE{
+				Id: "/foo",
+				Jwt: &workloadidentityv1pb.WorkloadIdentitySPIFFEJWT{
+					ExtraClaims: extraClaimTemplates,
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	modifiedMaxTTL, err := tp.srv.Auth().CreateWorkloadIdentity(ctx, &workloadidentityv1pb.WorkloadIdentity{
+		Kind:    types.KindWorkloadIdentity,
+		Version: types.V1,
+		Metadata: &headerv1.Metadata{
+			Name: "max-ttl-modified",
+		},
+		Spec: &workloadidentityv1pb.WorkloadIdentitySpec{
+			Spiffe: &workloadidentityv1pb.WorkloadIdentitySPIFFE{
+				Id: "/foo",
+				X509: &workloadidentityv1pb.WorkloadIdentitySPIFFEX509{
+					MaximumTtl: durationpb.New(time.Hour * 30),
+				},
+				Jwt: &workloadidentityv1pb.WorkloadIdentitySPIFFEJWT{
+					MaximumTtl: durationpb.New(time.Minute * 15),
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	sigstorePolicyRequired, err := tp.srv.Auth().CreateWorkloadIdentity(ctx, &workloadidentityv1pb.WorkloadIdentity{
+		Kind:    types.KindWorkloadIdentity,
+		Version: types.V1,
+		Metadata: &headerv1.Metadata{
+			Name: "sigstore-policy-required",
+		},
+		Spec: &workloadidentityv1pb.WorkloadIdentitySpec{
+			Spiffe: &workloadidentityv1pb.WorkloadIdentitySPIFFE{
+				Id: "/foo",
+			},
+			Rules: &workloadidentityv1pb.WorkloadIdentityRules{
+				Allow: []*workloadidentityv1pb.WorkloadIdentityRule{
+					{Expression: `sigstore.policy_satisfied("foo") || sigstore.policy_satisfied("bar")`},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	traitsRequired, err := tp.srv.Auth().CreateWorkloadIdentity(ctx, &workloadidentityv1pb.WorkloadIdentity{
+		Kind:    types.KindWorkloadIdentity,
+		Version: types.V1,
+		Metadata: &headerv1.Metadata{
+			Name: "traits-required",
+			Labels: map[string]string{
+				"trait-label": "trait-value-b",
+			},
+		},
+		Spec: &workloadidentityv1pb.WorkloadIdentitySpec{
+			Spiffe: &workloadidentityv1pb.WorkloadIdentitySPIFFE{
+				Id: "/foo",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	for policy, result := range map[string]error{
+		"foo": errors.New("missing artifact signature"),
+		"bar": nil,
+	} {
+		tp.sigstorePolicyEvaluator.On("Evaluate", mock.Anything, []string{policy}, mock.Anything).
+			Return(map[string]error{policy: result}, nil)
+	}
+
 	workloadAttrs := func(f func(attrs *workloadidentityv1pb.WorkloadAttrs)) *workloadidentityv1pb.WorkloadAttrs {
 		attrs := &workloadidentityv1pb.WorkloadAttrs{
 			Kubernetes: &workloadidentityv1pb.WorkloadAttrsKubernetes{
@@ -495,6 +640,7 @@ func TestIssueWorkloadIdentity(t *testing.T) {
 						Audiences: []string{"example.com", "test.example.com"},
 					},
 				},
+				RequestedTtl:  durationpb.New(time.Minute * 14),
 				WorkloadAttrs: workloadAttrs(nil),
 			},
 			requireErr: require.NoError,
@@ -502,7 +648,7 @@ func TestIssueWorkloadIdentity(t *testing.T) {
 				cred := res.Credential
 				require.NotNil(t, res.Credential)
 
-				wantTTL := time.Hour
+				wantTTL := time.Minute * 14
 				wantSPIFFEID := "spiffe://localhost/example/dog/default/bar"
 				require.Empty(t, cmp.Diff(
 					cred,
@@ -571,8 +717,38 @@ func TestIssueWorkloadIdentity(t *testing.T) {
 						events.SPIFFESVIDIssued{},
 						"ConnectionMetadata",
 						"JTI",
+						"Attributes",
 					),
 				))
+			},
+		},
+		{
+			name:   "jwt svid - extra claims",
+			client: wilcardAccessClient,
+			req: &workloadidentityv1pb.IssueWorkloadIdentityRequest{
+				Name: extraClaims.GetMetadata().GetName(),
+				Credential: &workloadidentityv1pb.IssueWorkloadIdentityRequest_JwtSvidParams{
+					JwtSvidParams: &workloadidentityv1pb.JWTSVIDParams{
+						Audiences: []string{"example.com"},
+					},
+				},
+				WorkloadAttrs: workloadAttrs(nil),
+			},
+			requireErr: require.NoError,
+			assert: func(t *testing.T, res *workloadidentityv1pb.IssueWorkloadIdentityResponse) {
+				parsed, err := jwt.ParseSigned(res.GetCredential().GetJwtSvid().GetJwt())
+				require.NoError(t, err)
+
+				var claims struct {
+					UserName string `json:"user_name"`
+					K8s      struct {
+						Names []string `json:"names"`
+					} `json:"k8s"`
+				}
+				err = parsed.Claims(tp.spiffeJWTSigner.Public(), &claims)
+				require.NoError(t, err)
+				require.Equal(t, "dog", claims.UserName)
+				require.Equal(t, []string{"test"}, claims.K8s.Names)
 			},
 		},
 		{
@@ -586,6 +762,7 @@ func TestIssueWorkloadIdentity(t *testing.T) {
 					},
 				},
 				WorkloadAttrs: workloadAttrs(nil),
+				RequestedTtl:  durationpb.New(time.Hour * 2),
 			},
 			requireErr: require.NoError,
 			assert: func(t *testing.T, res *workloadidentityv1pb.IssueWorkloadIdentityResponse) {
@@ -593,7 +770,7 @@ func TestIssueWorkloadIdentity(t *testing.T) {
 				require.NotNil(t, res.Credential)
 
 				wantSPIFFEID := "spiffe://localhost/example/dog/default/bar"
-				wantTTL := time.Hour
+				wantTTL := time.Hour * 2
 				require.Empty(t, cmp.Diff(
 					cred,
 					&workloadidentityv1pb.Credential{
@@ -686,6 +863,7 @@ func TestIssueWorkloadIdentity(t *testing.T) {
 						events.SPIFFESVIDIssued{},
 						"ConnectionMetadata",
 						"SerialNumber",
+						"Attributes",
 					),
 				))
 			},
@@ -799,8 +977,252 @@ func TestIssueWorkloadIdentity(t *testing.T) {
 						events.SPIFFESVIDIssued{},
 						"ConnectionMetadata",
 						"SerialNumber",
+						"Attributes",
 					),
 				))
+			},
+		},
+		{
+			name:   "x509 svid - ttl limited by default max",
+			client: wilcardAccessClient,
+			req: &workloadidentityv1pb.IssueWorkloadIdentityRequest{
+				Name: subjectTemplate.GetMetadata().GetName(),
+				Credential: &workloadidentityv1pb.IssueWorkloadIdentityRequest_X509SvidParams{
+					X509SvidParams: &workloadidentityv1pb.X509SVIDParams{
+						PublicKey: workloadKeyPubBytes,
+					},
+				},
+				RequestedTtl:  durationpb.New(time.Hour * 32),
+				WorkloadAttrs: workloadAttrs(nil),
+			},
+			requireErr: require.NoError,
+			assert: func(t *testing.T, res *workloadidentityv1pb.IssueWorkloadIdentityResponse) {
+				cred := res.Credential
+				require.NotNil(t, res.Credential)
+				wantTTL := time.Hour * 24
+				// Check expiry makes sense
+				require.WithinDuration(t, tp.clock.Now().Add(wantTTL), cred.GetExpiresAt().AsTime(), time.Second)
+				// Check the X509
+				cert, err := x509.ParseCertificate(cred.GetX509Svid().GetCert())
+				require.NoError(t, err)
+				// Check cert expiry
+				require.WithinDuration(t, tp.clock.Now().Add(wantTTL), cert.NotAfter, time.Second)
+				// Check cert nbf
+				require.WithinDuration(t, tp.clock.Now().Add(-1*time.Minute), cert.NotBefore, time.Second)
+				// Check cert TTL
+				require.Equal(t, cert.NotAfter.Sub(cert.NotBefore), wantTTL+time.Minute)
+			},
+		},
+		{
+			name:   "x509 svid - access via traits in labels",
+			client: traitAccessClient,
+			req: &workloadidentityv1pb.IssueWorkloadIdentityRequest{
+				Name: traitsRequired.GetMetadata().GetName(),
+				Credential: &workloadidentityv1pb.IssueWorkloadIdentityRequest_X509SvidParams{
+					X509SvidParams: &workloadidentityv1pb.X509SVIDParams{
+						PublicKey: workloadKeyPubBytes,
+					},
+				},
+				WorkloadAttrs: workloadAttrs(nil),
+			},
+			requireErr: require.NoError,
+			assert: func(t *testing.T, res *workloadidentityv1pb.IssueWorkloadIdentityResponse) {
+				require.NotNil(t, res.Credential)
+			},
+		},
+		{
+			name:   "x509 svid - unspecified ttl",
+			client: wilcardAccessClient,
+			req: &workloadidentityv1pb.IssueWorkloadIdentityRequest{
+				Name: subjectTemplate.GetMetadata().GetName(),
+				Credential: &workloadidentityv1pb.IssueWorkloadIdentityRequest_X509SvidParams{
+					X509SvidParams: &workloadidentityv1pb.X509SVIDParams{
+						PublicKey: workloadKeyPubBytes,
+					},
+				},
+				WorkloadAttrs: workloadAttrs(nil),
+			},
+			requireErr: require.NoError,
+			assert: func(t *testing.T, res *workloadidentityv1pb.IssueWorkloadIdentityResponse) {
+				cred := res.Credential
+				require.NotNil(t, res.Credential)
+				wantTTL := time.Hour
+				// Check expiry makes sense
+				require.WithinDuration(t, tp.clock.Now().Add(wantTTL), cred.GetExpiresAt().AsTime(), time.Second)
+				// Check the X509
+				cert, err := x509.ParseCertificate(cred.GetX509Svid().GetCert())
+				require.NoError(t, err)
+				// Check cert expiry
+				require.WithinDuration(t, tp.clock.Now().Add(wantTTL), cert.NotAfter, time.Second)
+				// Check cert nbf
+				require.WithinDuration(t, tp.clock.Now().Add(-1*time.Minute), cert.NotBefore, time.Second)
+				// Check cert TTL
+				require.Equal(t, cert.NotAfter.Sub(cert.NotBefore), wantTTL+time.Minute)
+			},
+		},
+		{
+			name:   "x509 svid - ttl limited by configured limit",
+			client: wilcardAccessClient,
+			req: &workloadidentityv1pb.IssueWorkloadIdentityRequest{
+				Name: modifiedMaxTTL.GetMetadata().GetName(),
+				Credential: &workloadidentityv1pb.IssueWorkloadIdentityRequest_X509SvidParams{
+					X509SvidParams: &workloadidentityv1pb.X509SVIDParams{
+						PublicKey: workloadKeyPubBytes,
+					},
+				},
+				RequestedTtl:  durationpb.New(time.Hour * 32),
+				WorkloadAttrs: workloadAttrs(nil),
+			},
+			requireErr: require.NoError,
+			assert: func(t *testing.T, res *workloadidentityv1pb.IssueWorkloadIdentityResponse) {
+				cred := res.Credential
+				require.NotNil(t, res.Credential)
+				wantTTL := time.Hour * 30
+				// Check expiry makes sense
+				require.WithinDuration(t, tp.clock.Now().Add(wantTTL), cred.GetExpiresAt().AsTime(), time.Second)
+				// Check the X509
+				cert, err := x509.ParseCertificate(cred.GetX509Svid().GetCert())
+				require.NoError(t, err)
+				// Check cert expiry
+				require.WithinDuration(t, tp.clock.Now().Add(wantTTL), cert.NotAfter, time.Second)
+				// Check cert nbf
+				require.WithinDuration(t, tp.clock.Now().Add(-1*time.Minute), cert.NotBefore, time.Second)
+				// Check cert TTL
+				require.Equal(t, cert.NotAfter.Sub(cert.NotBefore), wantTTL+time.Minute)
+			},
+		},
+		{
+			name:   "x509 svid - ok ttl between default and configured limit",
+			client: wilcardAccessClient,
+			req: &workloadidentityv1pb.IssueWorkloadIdentityRequest{
+				Name: modifiedMaxTTL.GetMetadata().GetName(),
+				Credential: &workloadidentityv1pb.IssueWorkloadIdentityRequest_X509SvidParams{
+					X509SvidParams: &workloadidentityv1pb.X509SVIDParams{
+						PublicKey: workloadKeyPubBytes,
+					},
+				},
+				RequestedTtl:  durationpb.New(time.Hour * 28),
+				WorkloadAttrs: workloadAttrs(nil),
+			},
+			requireErr: require.NoError,
+			assert: func(t *testing.T, res *workloadidentityv1pb.IssueWorkloadIdentityResponse) {
+				cred := res.Credential
+				require.NotNil(t, res.Credential)
+				wantTTL := time.Hour * 28
+				// Check expiry makes sense
+				require.WithinDuration(t, tp.clock.Now().Add(wantTTL), cred.GetExpiresAt().AsTime(), time.Second)
+				// Check the X509
+				cert, err := x509.ParseCertificate(cred.GetX509Svid().GetCert())
+				require.NoError(t, err)
+				// Check cert expiry
+				require.WithinDuration(t, tp.clock.Now().Add(wantTTL), cert.NotAfter, time.Second)
+				// Check cert nbf
+				require.WithinDuration(t, tp.clock.Now().Add(-1*time.Minute), cert.NotBefore, time.Second)
+				// Check cert TTL
+				require.Equal(t, cert.NotAfter.Sub(cert.NotBefore), wantTTL+time.Minute)
+			},
+		},
+		{
+			name:   "jwt svid ttl exceeds max default",
+			client: wilcardAccessClient,
+			req: &workloadidentityv1pb.IssueWorkloadIdentityRequest{
+				Name: full.GetMetadata().GetName(),
+				Credential: &workloadidentityv1pb.IssueWorkloadIdentityRequest_JwtSvidParams{
+					JwtSvidParams: &workloadidentityv1pb.JWTSVIDParams{
+						Audiences: []string{"example.com", "test.example.com"},
+					},
+				},
+				RequestedTtl:  durationpb.New(time.Hour * 30),
+				WorkloadAttrs: workloadAttrs(nil),
+			},
+			requireErr: require.NoError,
+			assert: func(t *testing.T, res *workloadidentityv1pb.IssueWorkloadIdentityResponse) {
+				cred := res.Credential
+				require.NotNil(t, res.Credential)
+
+				wantTTL := time.Hour * 24
+				// Check expiry makes sense
+				require.WithinDuration(t, tp.clock.Now().Add(wantTTL), cred.GetExpiresAt().AsTime(), time.Second)
+				parsed, err := jwt.ParseSigned(cred.GetJwtSvid().GetJwt())
+				require.NoError(t, err)
+				claims := jwt.Claims{}
+				err = parsed.Claims(tp.spiffeJWTSigner.Public(), &claims)
+				require.NoError(t, err)
+				require.WithinDuration(t, tp.clock.Now().Add(wantTTL), claims.Expiry.Time(), 5*time.Second)
+				require.WithinDuration(t, tp.clock.Now(), claims.IssuedAt.Time(), 5*time.Second)
+			},
+		},
+		{
+			name:   "jwt svid ttl exceeds configured default",
+			client: wilcardAccessClient,
+			req: &workloadidentityv1pb.IssueWorkloadIdentityRequest{
+				Name: modifiedMaxTTL.GetMetadata().GetName(),
+				Credential: &workloadidentityv1pb.IssueWorkloadIdentityRequest_JwtSvidParams{
+					JwtSvidParams: &workloadidentityv1pb.JWTSVIDParams{
+						Audiences: []string{"example.com", "test.example.com"},
+					},
+				},
+				RequestedTtl:  durationpb.New(time.Hour * 14),
+				WorkloadAttrs: workloadAttrs(nil),
+			},
+			requireErr: require.NoError,
+			assert: func(t *testing.T, res *workloadidentityv1pb.IssueWorkloadIdentityResponse) {
+				cred := res.Credential
+				require.NotNil(t, res.Credential)
+
+				wantTTL := time.Minute * 15
+				// Check expiry makes sense
+				require.WithinDuration(t, tp.clock.Now().Add(wantTTL), cred.GetExpiresAt().AsTime(), time.Second)
+				parsed, err := jwt.ParseSigned(cred.GetJwtSvid().GetJwt())
+				require.NoError(t, err)
+				claims := jwt.Claims{}
+				err = parsed.Claims(tp.spiffeJWTSigner.Public(), &claims)
+				require.NoError(t, err)
+				require.WithinDuration(t, tp.clock.Now().Add(wantTTL), claims.Expiry.Time(), 5*time.Second)
+				require.WithinDuration(t, tp.clock.Now(), claims.IssuedAt.Time(), 5*time.Second)
+			},
+		},
+		{
+			name:   "sigstore policy required",
+			client: wilcardAccessClient,
+			req: &workloadidentityv1pb.IssueWorkloadIdentityRequest{
+				Name: sigstorePolicyRequired.GetMetadata().GetName(),
+				Credential: &workloadidentityv1pb.IssueWorkloadIdentityRequest_JwtSvidParams{
+					JwtSvidParams: &workloadidentityv1pb.JWTSVIDParams{
+						Audiences: []string{"example.com", "test.example.com"},
+					},
+				},
+				WorkloadAttrs: func() *workloadidentityv1pb.WorkloadAttrs {
+					attrs := workloadAttrs(nil)
+					attrs.Sigstore = &workloadidentityv1pb.WorkloadAttrsSigstore{
+						Payloads: []*workloadidentityv1pb.SigstoreVerificationPayload{
+							{Bundle: []byte(`bundle`)},
+						},
+					}
+					return attrs
+				}(),
+			},
+			requireErr: require.NoError,
+			assert: func(t *testing.T, res *workloadidentityv1pb.IssueWorkloadIdentityResponse) {
+				require.NotNil(t, res.Credential)
+
+				evt, ok := tp.eventRecorder.LastEvent().(*events.SPIFFESVIDIssued)
+				require.True(t, ok)
+
+				attrsJSON, err := evt.Attributes.MarshalJSON()
+				require.NoError(t, err)
+
+				attrs := make(map[string]any)
+				require.NoError(t, json.Unmarshal(attrsJSON, &attrs))
+
+				sigstoreAttrs := attrs["workload"].(map[string]any)["sigstore"]
+				require.Empty(t, cmp.Diff(map[string]any{
+					"payload_count": float64(1),
+					"evaluated_policies": map[string]any{
+						"bar": map[string]any{"satisfied": true},
+						"foo": map[string]any{"reason": "missing artifact signature", "satisfied": false},
+					},
+				}, sigstoreAttrs))
 			},
 		},
 		{
@@ -817,7 +1239,7 @@ func TestIssueWorkloadIdentity(t *testing.T) {
 					attrs.Kubernetes.Namespace = "not-default"
 				}),
 			},
-			requireErr: func(t require.TestingT, err error, i ...interface{}) {
+			requireErr: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsAccessDenied(err))
 			},
 		},
@@ -833,7 +1255,7 @@ func TestIssueWorkloadIdentity(t *testing.T) {
 				},
 				WorkloadAttrs: workloadAttrs(nil),
 			},
-			requireErr: func(t require.TestingT, err error, i ...interface{}) {
+			requireErr: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsAccessDenied(err))
 			},
 		},
@@ -849,7 +1271,7 @@ func TestIssueWorkloadIdentity(t *testing.T) {
 				},
 				WorkloadAttrs: workloadAttrs(nil),
 			},
-			requireErr: func(t require.TestingT, err error, i ...interface{}) {
+			requireErr: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsNotFound(err))
 			},
 		},
@@ -991,7 +1413,7 @@ func TestIssueWorkloadIdentities(t *testing.T) {
 	require.NoError(t, err)
 
 	// Make enough to trip the "too many" error
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		_, err := tp.srv.Auth().CreateWorkloadIdentity(ctx, &workloadidentityv1pb.WorkloadIdentity{
 			Kind:    types.KindWorkloadIdentity,
 			Version: types.V1,
@@ -1165,7 +1587,7 @@ func TestIssueWorkloadIdentities(t *testing.T) {
 				},
 				WorkloadAttrs: workloadAttrs(nil),
 			},
-			requireErr: func(t require.TestingT, err error, i ...interface{}) {
+			requireErr: func(t require.TestingT, err error, i ...any) {
 				require.ErrorContains(t, err, "number of identities that would be issued exceeds maximum permitted (max = 10), use more specific labels")
 			},
 		},
@@ -1288,7 +1710,7 @@ func TestResourceService_CreateWorkloadIdentity(t *testing.T) {
 					},
 				},
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsAlreadyExists(err))
 			},
 		},
@@ -1309,7 +1731,7 @@ func TestResourceService_CreateWorkloadIdentity(t *testing.T) {
 					},
 				},
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "spec.spiffe.id: is required")
 			},
@@ -1331,7 +1753,7 @@ func TestResourceService_CreateWorkloadIdentity(t *testing.T) {
 					},
 				},
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsAccessDenied(err))
 			},
 		},
@@ -1467,7 +1889,7 @@ func TestResourceService_DeleteWorkloadIdentity(t *testing.T) {
 			req: &workloadidentityv1pb.DeleteWorkloadIdentityRequest{
 				Name: "i-do-not-exist",
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsNotFound(err))
 			},
 		},
@@ -1477,7 +1899,7 @@ func TestResourceService_DeleteWorkloadIdentity(t *testing.T) {
 			req: &workloadidentityv1pb.DeleteWorkloadIdentityRequest{
 				Name: "",
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "name: must be non-empty")
 			},
@@ -1488,7 +1910,7 @@ func TestResourceService_DeleteWorkloadIdentity(t *testing.T) {
 			req: &workloadidentityv1pb.DeleteWorkloadIdentityRequest{
 				Name: "unauthorized",
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsAccessDenied(err))
 			},
 		},
@@ -1588,7 +2010,7 @@ func TestResourceService_GetWorkloadIdentity(t *testing.T) {
 			req: &workloadidentityv1pb.GetWorkloadIdentityRequest{
 				Name: "i-do-not-exist",
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsNotFound(err))
 			},
 		},
@@ -1598,7 +2020,7 @@ func TestResourceService_GetWorkloadIdentity(t *testing.T) {
 			req: &workloadidentityv1pb.GetWorkloadIdentityRequest{
 				Name: "",
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "name: must be non-empty")
 			},
@@ -1609,7 +2031,7 @@ func TestResourceService_GetWorkloadIdentity(t *testing.T) {
 			req: &workloadidentityv1pb.GetWorkloadIdentityRequest{
 				Name: "unauthorized",
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsAccessDenied(err))
 			},
 		},
@@ -1668,7 +2090,7 @@ func TestResourceService_ListWorkloadIdentities(t *testing.T) {
 	// Create a pre-existing workload identities
 	// Two complete pages of ten, plus one incomplete page of nine
 	created := []*workloadidentityv1pb.WorkloadIdentity{}
-	for i := 0; i < 29; i++ {
+	for i := range 29 {
 		r, err := srv.Auth().CreateWorkloadIdentity(
 			ctx,
 			&workloadidentityv1pb.WorkloadIdentity{
@@ -1707,9 +2129,9 @@ func TestResourceService_ListWorkloadIdentities(t *testing.T) {
 		require.Len(t, res.WorkloadIdentities, 29)
 		require.Empty(t, res.NextPageToken)
 		for _, created := range created {
-			slices.ContainsFunc(res.WorkloadIdentities, func(resource *workloadidentityv1pb.WorkloadIdentity) bool {
+			require.True(t, slices.ContainsFunc(res.WorkloadIdentities, func(resource *workloadidentityv1pb.WorkloadIdentity) bool {
 				return proto.Equal(created, resource)
-			})
+			}))
 		}
 	})
 
@@ -1738,9 +2160,9 @@ func TestResourceService_ListWorkloadIdentities(t *testing.T) {
 		require.Len(t, fetched, 29)
 		require.Equal(t, 3, iterations)
 		for _, created := range created {
-			slices.ContainsFunc(fetched, func(resource *workloadidentityv1pb.WorkloadIdentity) bool {
+			require.True(t, slices.ContainsFunc(fetched, func(resource *workloadidentityv1pb.WorkloadIdentity) bool {
 				return proto.Equal(created, resource)
-			})
+			}))
 		}
 	})
 }
@@ -1844,7 +2266,7 @@ func TestResourceService_UpdateWorkloadIdentity(t *testing.T) {
 					WorkloadIdentity: preExisting2,
 				}
 			})(),
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsCompareFailed(err))
 			},
 		},
@@ -1865,7 +2287,7 @@ func TestResourceService_UpdateWorkloadIdentity(t *testing.T) {
 					},
 				},
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.Error(t, err)
 			},
 		},
@@ -1875,7 +2297,7 @@ func TestResourceService_UpdateWorkloadIdentity(t *testing.T) {
 			req: &workloadidentityv1pb.UpdateWorkloadIdentityRequest{
 				WorkloadIdentity: preExisting,
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsAccessDenied(err))
 			},
 		},
@@ -2017,7 +2439,7 @@ func TestResourceService_UpsertWorkloadIdentity(t *testing.T) {
 					},
 				},
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "spec.spiffe.id: is required")
 			},
@@ -2039,7 +2461,7 @@ func TestResourceService_UpsertWorkloadIdentity(t *testing.T) {
 					},
 				},
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsAccessDenied(err))
 			},
 		},
@@ -2187,7 +2609,7 @@ func TestRevocationService_CreateWorkloadIdentityX509Revocation(t *testing.T) {
 			req: &workloadidentityv1pb.CreateWorkloadIdentityX509RevocationRequest{
 				WorkloadIdentityX509Revocation: preExisting,
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsAlreadyExists(err))
 			},
 		},
@@ -2208,7 +2630,7 @@ func TestRevocationService_CreateWorkloadIdentityX509Revocation(t *testing.T) {
 					},
 				},
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "spec.reason: is required")
 			},
@@ -2230,7 +2652,7 @@ func TestRevocationService_CreateWorkloadIdentityX509Revocation(t *testing.T) {
 					},
 				},
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsAccessDenied(err))
 			},
 		},
@@ -2366,7 +2788,7 @@ func TestRevocationService_DeleteWorkloadIdentityX509Revocation(t *testing.T) {
 			req: &workloadidentityv1pb.DeleteWorkloadIdentityX509RevocationRequest{
 				Name: "i-do-not-exist",
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsNotFound(err))
 			},
 		},
@@ -2376,7 +2798,7 @@ func TestRevocationService_DeleteWorkloadIdentityX509Revocation(t *testing.T) {
 			req: &workloadidentityv1pb.DeleteWorkloadIdentityX509RevocationRequest{
 				Name: "",
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "name: must be non-empty")
 			},
@@ -2387,7 +2809,7 @@ func TestRevocationService_DeleteWorkloadIdentityX509Revocation(t *testing.T) {
 			req: &workloadidentityv1pb.DeleteWorkloadIdentityX509RevocationRequest{
 				Name: "unauthorized",
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsAccessDenied(err))
 			},
 		},
@@ -2487,7 +2909,7 @@ func TestRevocationService_GetWorkloadIdentityX509Revocation(t *testing.T) {
 			req: &workloadidentityv1pb.GetWorkloadIdentityX509RevocationRequest{
 				Name: "i-do-not-exist",
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsNotFound(err))
 			},
 		},
@@ -2497,7 +2919,7 @@ func TestRevocationService_GetWorkloadIdentityX509Revocation(t *testing.T) {
 			req: &workloadidentityv1pb.GetWorkloadIdentityX509RevocationRequest{
 				Name: "",
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "name: must be non-empty")
 			},
@@ -2508,7 +2930,7 @@ func TestRevocationService_GetWorkloadIdentityX509Revocation(t *testing.T) {
 			req: &workloadidentityv1pb.GetWorkloadIdentityX509RevocationRequest{
 				Name: "unauthorized",
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsAccessDenied(err))
 			},
 		},
@@ -2567,7 +2989,7 @@ func TestRevocationService_ListWorkloadIdentityX509Revocations(t *testing.T) {
 	// Create a pre-existing workload identitie revocations
 	// Two complete pages of ten, plus one incomplete page of nine
 	created := []*workloadidentityv1pb.WorkloadIdentityX509Revocation{}
-	for i := 0; i < 29; i++ {
+	for i := range 29 {
 		r, err := srv.Auth().CreateWorkloadIdentityX509Revocation(
 			ctx,
 			&workloadidentityv1pb.WorkloadIdentityX509Revocation{
@@ -2609,9 +3031,9 @@ func TestRevocationService_ListWorkloadIdentityX509Revocations(t *testing.T) {
 		require.Len(t, res.WorkloadIdentityX509Revocations, 29)
 		require.Empty(t, res.NextPageToken)
 		for _, created := range created {
-			slices.ContainsFunc(res.WorkloadIdentityX509Revocations, func(resource *workloadidentityv1pb.WorkloadIdentityX509Revocation) bool {
+			require.True(t, slices.ContainsFunc(res.WorkloadIdentityX509Revocations, func(resource *workloadidentityv1pb.WorkloadIdentityX509Revocation) bool {
 				return proto.Equal(created, resource)
-			})
+			}))
 		}
 	})
 
@@ -2640,9 +3062,9 @@ func TestRevocationService_ListWorkloadIdentityX509Revocations(t *testing.T) {
 		require.Len(t, fetched, 29)
 		require.Equal(t, 3, iterations)
 		for _, created := range created {
-			slices.ContainsFunc(fetched, func(resource *workloadidentityv1pb.WorkloadIdentityX509Revocation) bool {
+			require.True(t, slices.ContainsFunc(fetched, func(resource *workloadidentityv1pb.WorkloadIdentityX509Revocation) bool {
 				return proto.Equal(created, resource)
-			})
+			}))
 		}
 	})
 }
@@ -2748,7 +3170,7 @@ func TestRevocationService_UpdateWorkloadIdentityX509Revocation(t *testing.T) {
 					WorkloadIdentityX509Revocation: preExisting2,
 				}
 			})(),
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsCompareFailed(err))
 			},
 		},
@@ -2769,7 +3191,7 @@ func TestRevocationService_UpdateWorkloadIdentityX509Revocation(t *testing.T) {
 					},
 				},
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.Error(t, err)
 			},
 		},
@@ -2779,7 +3201,7 @@ func TestRevocationService_UpdateWorkloadIdentityX509Revocation(t *testing.T) {
 			req: &workloadidentityv1pb.UpdateWorkloadIdentityX509RevocationRequest{
 				WorkloadIdentityX509Revocation: preExisting,
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsAccessDenied(err))
 			},
 		},
@@ -2921,7 +3343,7 @@ func TestRevocationService_UpsertWorkloadIdentityX509Revocation(t *testing.T) {
 					},
 				},
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "spec.reason: is required")
 			},
@@ -2943,7 +3365,7 @@ func TestRevocationService_UpsertWorkloadIdentityX509Revocation(t *testing.T) {
 					},
 				},
 			},
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsAccessDenied(err))
 			},
 		},
@@ -3000,9 +3422,15 @@ func TestRevocationService_UpsertWorkloadIdentityX509Revocation(t *testing.T) {
 
 func TestRevocationService_CRL(t *testing.T) {
 	t.Parallel()
-	srv, _ := newTestTLSServer(t)
+	revocationsEventCh := make(chan struct{})
+	fakeClock := clockwork.NewFakeClock()
+	srv, _ := newTestTLSServer(t, func(config *auth.TestTLSServerConfig) {
+		config.APIConfig.MutateRevocationsServiceConfig = func(config *workloadidentityv1.RevocationServiceConfig) {
+			config.RevocationsEventProcessedCh = revocationsEventCh
+			config.Clock = fakeClock
+		}
+	})
 	ctx := context.Background()
-	fakeClock := srv.Clock().(*clockwork.FakeClock)
 
 	authorizedUser, _, err := auth.CreateUserAndRole(
 		srv.Auth(),
@@ -3082,6 +3510,12 @@ func TestRevocationService_CRL(t *testing.T) {
 			},
 		)
 		require.NoError(t, err)
+		// Wait for the revocation event to be processed.
+		select {
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for revocation event to be processed")
+		case <-revocationsEventCh:
+		}
 	}
 	deleteRevocation := func(t *testing.T, name string) {
 		_, err = revocationsClient.DeleteWorkloadIdentityX509Revocation(
@@ -3091,6 +3525,12 @@ func TestRevocationService_CRL(t *testing.T) {
 			},
 		)
 		require.NoError(t, err)
+		// Wait for the revocation event to be processed.
+		select {
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for revocation event to be processed")
+		case <-revocationsEventCh:
+		}
 	}
 
 	// Fetch the initial, empty, CRL

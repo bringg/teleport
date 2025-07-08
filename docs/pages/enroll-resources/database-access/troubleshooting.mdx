@@ -7,6 +7,12 @@ Common issues and resolution steps.
 
 ## Connection attempts fail
 
+### Timeout errors
+
+Attempts to connect to the database fail with a message similar to **"dial tcp ... i/o timeout"**.
+
+(!docs/pages/includes/database-access/connection-timeout-troubleshooting.mdx!)
+
 ### Certificate expired or is not yet valid
 
 Attempts to connect to the database fail, and the error message returned is
@@ -44,7 +50,7 @@ details and examples:
 
 After the new certificate is issued, update your database to make it take effect.
 
-## Access to db denied
+### Access to db denied
 
 Attempts to connect to the database fail with an error message
 similar to: **"access to db denied"**.
@@ -102,8 +108,7 @@ spec:
 
 The `internal.db_users` and `internal.db_names` traits are
 replaced with values from the Teleport local user database. For full details on
-how traits work in Teleport roles, see the [Teleport Access
-Controls Reference](../../reference/access-controls/roles.mdx).
+how traits work in Teleport roles, see the [Access Controls Reference](../../reference/access-controls/roles.mdx).
 
 Now suppose we want to grant Alice more permissive access.
 To keep this example simple, let's just assign Alice a different role.
@@ -147,7 +152,7 @@ This example is intentionally simple; we could have configured Alice's permissio
 For more detailed information about database access controls and how to restrict
 access see the [RBAC](../database-access/rbac.mdx) documentation.
 
-## Connection to MySQL database results in "Unknown system variable 'query_cache_size'" error
+### Connection to MySQL database results in "Unknown system variable 'query_cache_size'" error
 
 When TLS Routing is disable by default, the Teleport Proxy Service returns `8.0.0-Teleport` as the MySQL server version. In some cases, like connecting with a GUI Client, this can result in obtaining an `Unknown system variable 'query_cache_size'` error that indicates that MySQL capabilities were not properly negotiated between the MySQL client and server.
 

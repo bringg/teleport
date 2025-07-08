@@ -52,7 +52,7 @@ export type Cfg = typeof cfg;
 const cfg = {
   /** @deprecated Use cfg.edition instead. */
   isEnterprise: false,
-  edition: 'oss',
+  edition: 'oss', // oss, community, ent
   isCloud: false,
   automaticUpgrades: false,
   // TODO (avatus) this is a temporary escape hatch. Delete in v18
@@ -95,7 +95,7 @@ const cfg = {
   // isPolicyEnabled refers to the Teleport Policy product
   isPolicyEnabled: false,
 
-  configDir: '$HOME/.config',
+  configDir: '$HOME/.config/teleport',
 
   baseUrl: window.location.origin,
 
@@ -138,6 +138,7 @@ const cfg = {
     preferredLocalMfa: '' as PreferredMfaType,
     // motd is the message of the day, displayed to users before login.
     motd: '',
+    identifierFirstLoginEnabled: false,
   },
 
   proxyCluster: 'localhost',
@@ -160,10 +161,13 @@ const cfg = {
     account: '/web/account',
     accountPassword: '/web/account/password',
     accountMfaDevices: '/web/account/twofactor',
+    accountSecurity: '/web/account/security',
+    accountPreferences: '/web/account/preferences',
     roles: '/web/roles',
     joinTokens: '/web/tokens',
     deviceTrust: `/web/devices`,
     deviceTrustAuthorize: '/web/device/authorize/:id?/:token?',
+    workloadIdentity: `/web/workloadidentity`,
     sso: '/web/sso',
     cluster: '/web/cluster/:clusterId/',
     clusters: '/web/clusters',
@@ -180,13 +184,15 @@ const cfg = {
     desktop: '/web/cluster/:clusterId/desktops/:desktopName/:username',
     users: '/web/users',
     bots: '/web/bots',
+    botInstances: '/web/bots/instances',
+    botInstance: '/web/bot/:botName/instance/:instanceId',
     botsNew: '/web/bots/new/:type?',
     console: '/web/cluster/:clusterId/console',
     consoleNodes: '/web/cluster/:clusterId/console/nodes',
     consoleConnect: '/web/cluster/:clusterId/console/node/:serverId/:login',
     consoleSession: '/web/cluster/:clusterId/console/session/:sid',
     kubeExec: '/web/cluster/:clusterId/console/kube/exec/:kubeId/',
-    kubeExecSession: '/web/cluster/:clusterId/console/kube/exec/:sid',
+    kubeExecSession: '/web/cluster/:clusterId/console/kube/session/:sid',
     dbConnect: '/web/cluster/:clusterId/console/db/connect/:serviceName',
     dbSession: '/web/cluster/:clusterId/console/db/session/:sid',
     player: '/web/cluster/:clusterId/session/:sid', // ?recordingType=ssh|desktop|k8s&durationMs=1234
@@ -263,7 +269,7 @@ const cfg = {
     passwordTokenPath: '/v1/webapi/users/password/token/:tokenId?',
     changeUserPasswordPath: '/v1/webapi/users/password',
     unifiedResourcesPath:
-      '/v1/webapi/sites/:clusterId/resources?searchAsRoles=:searchAsRoles?&limit=:limit?&startKey=:startKey?&kinds=:kinds?&query=:query?&search=:search?&sort=:sort?&pinnedOnly=:pinnedOnly?&includedResourceMode=:includedResourceMode?',
+      '/v1/webapi/sites/:clusterId/resources?searchAsRoles=:searchAsRoles?&limit=:limit?&startKey=:startKey?&kinds=:kinds?&query=:query?&search=:search?&sort=:sort?&pinnedOnly=:pinnedOnly?&includedResourceMode=:includedResourceMode?&status=:status?',
     nodesPath:
       '/v1/webapi/sites/:clusterId/nodes?searchAsRoles=:searchAsRoles?&limit=:limit?&startKey=:startKey?&query=:query?&search=:search?&sort=:sort?',
     nodesPathNoParams: '/v1/webapi/sites/:clusterId/nodes',
@@ -277,6 +283,10 @@ const cfg = {
     databaseIamPolicyPath: `/v1/webapi/sites/:clusterId/databases/:database/iam/policy`,
     databasePath: `/v1/webapi/sites/:clusterId/databases/:database`,
     databasesPath: `/v1/webapi/sites/:clusterId/databases?searchAsRoles=:searchAsRoles?&limit=:limit?&startKey=:startKey?&query=:query?&search=:search?&sort=:sort?`,
+
+    databaseServer: {
+      list: `/v1/webapi/sites/:clusterId/databaseservers?searchAsRoles=:searchAsRoles?&limit=:limit?&startKey=:startKey?&query=:query?`,
+    },
 
     desktopsPath: `/v1/webapi/sites/:clusterId/desktops?searchAsRoles=:searchAsRoles?&limit=:limit?&startKey=:startKey?&query=:query?&search=:search?&sort=:sort?`,
     desktopPath: `/v1/webapi/sites/:clusterId/desktops/:desktopName`,
@@ -329,7 +339,6 @@ const cfg = {
     mfaRequired: '/v1/webapi/sites/:clusterId/mfa/required',
     mfaLoginBegin: '/v1/webapi/mfa/login/begin', // creates authnenticate challenge with user and password
     mfaLoginFinish: '/v1/webapi/mfa/login/finishsession', // creates a web session
-    mfaChangePasswordBegin: '/v1/webapi/mfa/authenticatechallenge/password',
 
     headlessSsoPath: `/v1/webapi/headless/:requestId`,
 
@@ -443,6 +452,9 @@ const cfg = {
 
     botsPath: '/v1/webapi/sites/:clusterId/machine-id/bot/:name?',
     botsTokenPath: '/v1/webapi/sites/:clusterId/machine-id/token',
+    botInstancePath:
+      '/v1/webapi/sites/:clusterId/machine-id/bot/:botName/bot-instance/:instanceId',
+    botInstancesPath: '/v1/webapi/sites/:clusterId/machine-id/bot-instance',
 
     gcpWorkforceConfigurePath:
       '/v1/webapi/scripts/integrations/configure/gcp-workforce-saml.sh?orgId=:orgId&poolName=:poolName&poolProviderName=:poolProviderName',
@@ -457,6 +469,8 @@ const cfg = {
       '/v1/webapi/sites/:clusterId/plugins/:plugin/files/msteams_app.zip',
 
     defaultConnectorPath: '/v1/webapi/authconnector/default',
+
+    authConnectorsPath: '/v1/webapi/authconnectors',
 
     yaml: {
       parse: '/v1/webapi/yaml/parse/:kind',
@@ -711,6 +725,14 @@ const cfg = {
     return generatePath(cfg.routes.bots);
   },
 
+  getBotInstancesRoute() {
+    return generatePath(cfg.routes.botInstances);
+  },
+
+  getBotInstanceDetailsRoute(params: { botName: string; instanceId: string }) {
+    return generatePath(cfg.routes.botInstance, params);
+  },
+
   getBotsNewRoute(type?: string) {
     return generatePath(cfg.routes.botsNew, { type });
   },
@@ -818,8 +840,7 @@ const cfg = {
     return generatePath(cfg.api.connectionDiagnostic, { clusterId });
   },
 
-  getMfaRequiredUrl() {
-    const clusterId = cfg.proxyCluster;
+  getMfaRequiredUrl(clusterId: string) {
     return generatePath(cfg.api.mfaRequired, { clusterId });
   },
 
@@ -937,6 +958,13 @@ const cfg = {
 
   getDatabasesUrl(clusterId: string, params?: UrlResourcesParams) {
     return generateResourcePath(cfg.api.databasesPath, {
+      clusterId,
+      ...params,
+    });
+  },
+
+  getDatabaseServerUrl(clusterId: string, params?: UrlResourcesParams) {
+    return generateResourcePath(cfg.api.databaseServer.list, {
       clusterId,
       ...params,
     });
@@ -1384,6 +1412,20 @@ const cfg = {
     return generatePath(cfg.api.botsPath, { clusterId, name });
   },
 
+  listBotInstancesUrl() {
+    const clusterId = cfg.proxyCluster;
+    return generatePath(cfg.api.botInstancesPath, { clusterId });
+  },
+
+  getBotInstanceUrl(botName: string, instanceId: string) {
+    const clusterId = cfg.proxyCluster;
+    return generatePath(cfg.api.botInstancePath, {
+      clusterId,
+      botName,
+      instanceId,
+    });
+  },
+
   getGcpWorkforceConfigScriptUrl(p: UrlGcpWorkforceConfigParam) {
     return (
       cfg.baseUrl + generatePath(cfg.api.gcpWorkforceConfigurePath, { ...p })
@@ -1456,6 +1498,8 @@ export interface UrlSshParams {
 export interface UrlKubeExecParams {
   clusterId: string;
   kubeId: string;
+  sid?: string;
+  mode?: ParticipantMode;
 }
 
 export interface UrlDbConnectParams {

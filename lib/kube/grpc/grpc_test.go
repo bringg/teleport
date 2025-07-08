@@ -24,6 +24,7 @@ import (
 	"crypto/x509"
 	"log/slog"
 	"net"
+	"slices"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -39,7 +40,7 @@ import (
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/auth/authclient"
-	kubeproxy "github.com/gravitational/teleport/lib/kube/proxy"
+	"github.com/gravitational/teleport/lib/authz"
 	testingkubemock "github.com/gravitational/teleport/lib/kube/proxy/testing/kube_server"
 	"github.com/gravitational/teleport/lib/limiter"
 	"github.com/gravitational/teleport/lib/modules"
@@ -65,11 +66,11 @@ func TestListKubernetesResources(t *testing.T) {
 	t.Cleanup(func() { kubeMock.Close() })
 
 	// creates a Kubernetes service with a configured cluster pointing to mock api server
-	testCtx := kubeproxy.SetupTestContext(
+	testCtx := SetupTestContext(
 		context.Background(),
 		t,
-		kubeproxy.TestConfig{
-			Clusters: []kubeproxy.KubeClusterConfig{{Name: kubeCluster, APIEndpoint: kubeMock.URL}},
+		TestConfig{
+			Clusters: []KubeClusterConfig{{Name: kubeCluster, APIEndpoint: kubeMock.URL}},
 		},
 	)
 	// close tests
@@ -83,7 +84,7 @@ func TestListKubernetesResources(t *testing.T) {
 		testCtx.Context,
 		t,
 		usernameWithFullAccess,
-		kubeproxy.RoleSpec{
+		RoleSpec{
 			Name:       usernameWithFullAccess,
 			KubeUsers:  kubeUsers,
 			KubeGroups: kubeGroups,
@@ -91,7 +92,15 @@ func TestListKubernetesResources(t *testing.T) {
 				// override the role to allow access to all kube resources.
 				r.SetKubeResources(
 					types.Allow,
-					[]types.KubernetesResource{{Kind: types.Wildcard, Name: types.Wildcard, Namespace: types.Wildcard, Verbs: []string{types.Wildcard}}},
+					[]types.KubernetesResource{
+						{
+							Kind:      types.Wildcard,
+							Name:      types.Wildcard,
+							Namespace: types.Wildcard,
+							Verbs:     []string{types.Wildcard},
+							APIGroup:  types.Wildcard,
+						},
+					},
 				)
 			},
 		},
@@ -101,7 +110,7 @@ func TestListKubernetesResources(t *testing.T) {
 		testCtx.Context,
 		t,
 		usernameWithEnforceKubePodOrNamespace,
-		kubeproxy.RoleSpec{
+		RoleSpec{
 			Name:       usernameWithEnforceKubePodOrNamespace,
 			KubeUsers:  kubeUsers,
 			KubeGroups: kubeGroups,
@@ -111,7 +120,7 @@ func TestListKubernetesResources(t *testing.T) {
 				// set the role to allow searching as fullAccessRole.
 				role.SetSearchAsRoles(types.Allow, []string{fullAccessRole.GetName()})
 				// restrict querying to pods only
-				role.SetRequestKubernetesResources(types.Allow, []types.RequestKubernetesResource{{Kind: "namespace"}, {Kind: "pod"}})
+				role.SetRequestKubernetesResources(types.Allow, []types.RequestKubernetesResource{{Kind: "namespaces"}, {Kind: "pods"}})
 			},
 		},
 	)
@@ -120,7 +129,7 @@ func TestListKubernetesResources(t *testing.T) {
 		testCtx.Context,
 		t,
 		usernameWithEnforceKubeSecret,
-		kubeproxy.RoleSpec{
+		RoleSpec{
 			Name:       usernameWithEnforceKubeSecret,
 			KubeUsers:  kubeUsers,
 			KubeGroups: kubeGroups,
@@ -130,7 +139,7 @@ func TestListKubernetesResources(t *testing.T) {
 				// set the role to allow searching as fullAccessRole.
 				role.SetSearchAsRoles(types.Allow, []string{fullAccessRole.GetName()})
 				// restrict querying to secrets only
-				role.SetRequestKubernetesResources(types.Allow, []types.RequestKubernetesResource{{Kind: "secret"}})
+				role.SetRequestKubernetesResources(types.Allow, []types.RequestKubernetesResource{{Kind: "secrets"}})
 
 			},
 		},
@@ -140,7 +149,7 @@ func TestListKubernetesResources(t *testing.T) {
 		testCtx.Context,
 		t,
 		usernameNoAccess,
-		kubeproxy.RoleSpec{
+		RoleSpec{
 			Name:       usernameNoAccess,
 			KubeUsers:  kubeUsers,
 			KubeGroups: kubeGroups,
@@ -556,7 +565,7 @@ func TestListKubernetesResources(t *testing.T) {
 						Kind:    types.KindKubeClusterRole,
 						Version: "v1",
 						Metadata: types.Metadata{
-							Name:      "nginx-1",
+							Name:      "cr-nginx-1",
 							Namespace: "default",
 						},
 						Spec: types.KubernetesResourceSpecV1{},
@@ -565,7 +574,7 @@ func TestListKubernetesResources(t *testing.T) {
 						Kind:    types.KindKubeClusterRole,
 						Version: "v1",
 						Metadata: types.Metadata{
-							Name:      "nginx-2",
+							Name:      "cr-nginx-2",
 							Namespace: "default",
 						},
 						Spec: types.KubernetesResourceSpecV1{},
@@ -574,7 +583,7 @@ func TestListKubernetesResources(t *testing.T) {
 						Kind:    types.KindKubeClusterRole,
 						Version: "v1",
 						Metadata: types.Metadata{
-							Name:      "test",
+							Name:      "cr-test",
 							Namespace: "default",
 						},
 						Spec: types.KubernetesResourceSpecV1{},
@@ -585,7 +594,6 @@ func TestListKubernetesResources(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			_, restCfg := testCtx.GenTestKubeClientTLSCert(t, tt.args.user.GetName(), "")
@@ -611,8 +619,9 @@ func TestListKubernetesResources(t *testing.T) {
 			tt.assertErr(t, err)
 			if tt.want != nil {
 				for _, want := range tt.want.Resources {
+					isClusterWide := slices.Contains(types.KubernetesClusterWideResourceKinds, want.Kind)
 					// fill in defaults
-					err := want.CheckAndSetDefaults()
+					err := want.CheckAndSetDefaults(!isClusterWide)
 					require.NoError(t, err)
 				}
 			}
@@ -622,7 +631,7 @@ func TestListKubernetesResources(t *testing.T) {
 }
 
 // initGRPCServer creates a grpc server serving on the provided listener.
-func initGRPCServer(t *testing.T, testCtx *kubeproxy.TestContext, listener net.Listener) {
+func initGRPCServer(t *testing.T, testCtx *TestContext, listener net.Listener) {
 	clusterName := testCtx.ClusterName
 	serverIdentity, err := auth.NewServerIdentity(testCtx.AuthServer, testCtx.HostID, types.RoleProxy)
 	require.NoError(t, err)
@@ -634,9 +643,11 @@ func initGRPCServer(t *testing.T, testCtx *kubeproxy.TestContext, listener net.L
 	// adds authentication information to the context
 	// and passes it to the API server
 	authMiddleware := &auth.Middleware{
-		ClusterName:   clusterName,
-		Limiter:       limiter,
-		AcceptedUsage: []string{teleport.UsageKubeOnly},
+		Middleware: authz.Middleware{
+			ClusterName:   clusterName,
+			AcceptedUsage: []string{teleport.UsageKubeOnly},
+		},
+		Limiter: limiter,
 	}
 
 	tlsConf := copyAndConfigureTLS(tlsConfig, testCtx.AuthClient, clusterName)

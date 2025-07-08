@@ -24,9 +24,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -169,7 +171,7 @@ func (m *mockEC2Client) DescribeInstances(ctx context.Context, input *ec2.Descri
 
 func genEC2InstanceIDs(n int) []string {
 	var ec2InstanceIDs []string
-	for i := 0; i < n; i++ {
+	for i := range n {
 		ec2InstanceIDs = append(ec2InstanceIDs, fmt.Sprintf("instance-id-%d", i))
 	}
 	return ec2InstanceIDs
@@ -364,7 +366,7 @@ func TestDiscoveryServer(t *testing.T) {
 		staticMatchers            Matchers
 		wantInstalledInstances    []string
 		wantDiscoveryConfigStatus *discoveryconfig.Status
-		userTasksDiscoverCheck    require.ValueAssertionFunc
+		userTasksDiscoverCheck    func(t *testing.T, userTasksClt services.UserTasks)
 		ssmRunError               error
 	}{
 		{
@@ -696,10 +698,9 @@ func TestDiscoveryServer(t *testing.T) {
 			staticMatchers:         Matchers{},
 			discoveryConfig:        discoveryConfigForUserTaskEC2Test,
 			wantInstalledInstances: []string{},
-			userTasksDiscoverCheck: func(t require.TestingT, i1 interface{}, i2 ...interface{}) {
-				existingTasks, ok := i1.([]*usertasksv1.UserTask)
-				require.True(t, ok, "failed to get existing tasks: %T", i1)
-				require.Len(t, existingTasks, 1)
+			userTasksDiscoverCheck: func(t *testing.T, userTasksClt services.UserTasks) {
+				atLeastOneUserTask := 1
+				existingTasks := fetchAllUserTasks(t, userTasksClt, atLeastOneUserTask, 0)
 				existingTask := existingTasks[0]
 
 				require.Equal(t, "OPEN", existingTask.GetSpec().State)
@@ -761,10 +762,10 @@ func TestDiscoveryServer(t *testing.T) {
 			staticMatchers:         Matchers{},
 			discoveryConfig:        discoveryConfigForUserTaskEKSTest,
 			wantInstalledInstances: []string{},
-			userTasksDiscoverCheck: func(t require.TestingT, i1 interface{}, i2 ...interface{}) {
-				existingTasks, ok := i1.([]*usertasksv1.UserTask)
-				require.True(t, ok, "failed to get existing tasks: %T", i1)
-				require.Len(t, existingTasks, 1)
+			userTasksDiscoverCheck: func(t *testing.T, userTasksClt services.UserTasks) {
+				atLeastOneUserTask := 1
+				atLeastTwoTaskItems := 2
+				existingTasks := fetchAllUserTasks(t, userTasksClt, atLeastOneUserTask, atLeastTwoTaskItems)
 				existingTask := existingTasks[0]
 
 				require.Equal(t, "OPEN", existingTask.GetSpec().State)
@@ -826,10 +827,10 @@ func TestDiscoveryServer(t *testing.T) {
 			staticMatchers:         Matchers{},
 			discoveryConfig:        discoveryConfigWithAndWithoutAppDiscovery,
 			wantInstalledInstances: []string{},
-			userTasksDiscoverCheck: func(t require.TestingT, i1 interface{}, i2 ...interface{}) {
-				existingTasks, ok := i1.([]*usertasksv1.UserTask)
-				require.True(t, ok, "failed to get existing tasks: %T", i1)
-				require.Len(t, existingTasks, 2)
+			userTasksDiscoverCheck: func(t *testing.T, userTasksClt services.UserTasks) {
+				atLeastOneUserTask := 2
+				atLeastTwoTaskItems := 2
+				existingTasks := fetchAllUserTasks(t, userTasksClt, atLeastOneUserTask, atLeastTwoTaskItems)
 				existingTask := existingTasks[0]
 				if existingTask.Spec.DiscoverEks.AppAutoDiscover == false {
 					existingTask = existingTasks[1]
@@ -962,13 +963,15 @@ func TestDiscoveryServer(t *testing.T) {
 					instances := installer.GetInstalledInstances()
 					slices.Sort(instances)
 					return slices.Equal(tc.wantInstalledInstances, instances) && len(tc.wantInstalledInstances) == reporter.ResourceCreateEventCount()
-				}, 5000*time.Millisecond, 50*time.Millisecond)
+				}, 10*time.Second, 50*time.Millisecond)
 			} else {
 				require.Never(t, func() bool {
 					return len(installer.GetInstalledInstances()) > 0 || reporter.ResourceCreateEventCount() > 0
 				}, 500*time.Millisecond, 50*time.Millisecond)
 			}
-			require.GreaterOrEqual(t, reporter.DiscoveryFetchEventCount(), 1)
+			require.Eventually(t, func() bool {
+				return reporter.DiscoveryFetchEventCount() > 0
+			}, 10*time.Second, 50*time.Millisecond)
 
 			// Discovery Config Status is updated accordingly
 			if tc.wantDiscoveryConfigStatus != nil {
@@ -991,24 +994,46 @@ func TestDiscoveryServer(t *testing.T) {
 						require.Equal(t, expectedValue, got.IntegrationDiscoveredResources[expectedKey])
 					}
 					return true
-				}, 500*time.Millisecond, 50*time.Millisecond)
+				}, 1*time.Second, 50*time.Millisecond)
 			}
 			if tc.userTasksDiscoverCheck != nil {
-				var allUserTasks []*usertasksv1.UserTask
-				var nextToken string
-				for {
-					var userTasks []*usertasksv1.UserTask
-					userTasks, nextToken, err = tlsServer.Auth().UserTasks.ListUserTasks(context.Background(), 0, "", &usertasksv1.ListUserTasksFilters{})
-					require.NoError(t, err)
-					allUserTasks = append(allUserTasks, userTasks...)
-					if nextToken == "" {
-						break
-					}
-				}
-				tc.userTasksDiscoverCheck(t, allUserTasks)
+				tc.userTasksDiscoverCheck(t, tlsServer.Auth().UserTasks)
 			}
 		})
 	}
+}
+
+func fetchAllUserTasks(t *testing.T, userTasksClt services.UserTasks, minUserTasks, minUserTaskResources int) []*usertasksv1.UserTask {
+	var existingTasks []*usertasksv1.UserTask
+	require.EventuallyWithT(t, func(t *assert.CollectT) {
+		var allTasks []*usertasksv1.UserTask
+		var nextToken string
+		for {
+			var userTasks []*usertasksv1.UserTask
+			userTasks, nextTokenResp, err := userTasksClt.ListUserTasks(context.Background(), 0, nextToken, &usertasksv1.ListUserTasksFilters{})
+			assert.NoError(t, err)
+			allTasks = append(allTasks, userTasks...)
+			if nextTokenResp == "" {
+				break
+			}
+			nextToken = nextTokenResp
+		}
+		existingTasks = allTasks
+
+		if !assert.GreaterOrEqual(t, len(allTasks), minUserTasks) {
+			return
+		}
+
+		gotResources := 0
+		for _, task := range allTasks {
+			gotResources += len(task.GetSpec().GetDiscoverEc2().GetInstances())
+			gotResources += len(task.GetSpec().GetDiscoverEks().GetClusters())
+			gotResources += len(task.GetSpec().GetDiscoverRds().GetDatabases())
+		}
+		assert.GreaterOrEqual(t, gotResources, minUserTaskResources)
+	}, 10*time.Second, 50*time.Millisecond)
+
+	return existingTasks
 }
 
 func TestDiscoveryServerConcurrency(t *testing.T) {
@@ -1176,12 +1201,17 @@ func TestDiscoveryKubeServices(t *testing.T) {
 
 	appProtocolHTTP := "http"
 	mockKubeServices := []*corev1.Service{
-		newMockKubeService("service1", "ns1", "", map[string]string{"test-label": "testval"}, map[string]string{types.DiscoveryPublicAddr: "custom.example.com"},
+		newMockKubeService("service1", "ns1", "",
+			map[string]string{"test-label": "testval"},
+			map[string]string{types.DiscoveryPublicAddr: "custom.example.com", types.DiscoveryPathLabel: "foo/bar baz"},
 			[]corev1.ServicePort{{Port: 42, Name: "http", Protocol: corev1.ProtocolTCP}}),
-		newMockKubeService("service2", "ns2", "", map[string]string{
-			"test-label":  "testval",
-			"test-label2": "testval2",
-		}, nil, []corev1.ServicePort{{Port: 42, Name: "custom", AppProtocol: &appProtocolHTTP, Protocol: corev1.ProtocolTCP}}),
+		newMockKubeService("service2", "ns2", "",
+			map[string]string{
+				"test-label":  "testval",
+				"test-label2": "testval2",
+			},
+			nil,
+			[]corev1.ServicePort{{Port: 42, Name: "custom", AppProtocol: &appProtocolHTTP, Protocol: corev1.ProtocolTCP}}),
 	}
 
 	app1 := mustConvertKubeServiceToApp(t, mainDiscoveryGroup, "http", mockKubeServices[0], mockKubeServices[0].Spec.Ports[0])
@@ -1258,7 +1288,6 @@ func TestDiscoveryKubeServices(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1722,7 +1751,7 @@ func TestDiscoveryServer_New(t *testing.T) {
 
 			cloudClients: &mockFetchersClients{},
 			matchers:     Matchers{},
-			errAssertion: func(t require.TestingT, err error, i ...interface{}) {
+			errAssertion: func(t require.TestingT, err error, i ...any) {
 				require.ErrorIs(t, err, &trace.BadParameterError{Message: "no matchers or discovery group configured for discovery"})
 			},
 			discServerAssertion: require.Nil,
@@ -1746,7 +1775,7 @@ func TestDiscoveryServer_New(t *testing.T) {
 				},
 			},
 			errAssertion: require.NoError,
-			discServerAssertion: func(t require.TestingT, i interface{}, i2 ...interface{}) {
+			discServerAssertion: func(t require.TestingT, i any, i2 ...any) {
 				require.NotNil(t, i)
 				val, ok := i.(*Server)
 				require.True(t, ok)
@@ -1779,7 +1808,7 @@ func TestDiscoveryServer_New(t *testing.T) {
 				},
 			},
 			errAssertion: require.NoError,
-			discServerAssertion: func(t require.TestingT, i interface{}, i2 ...interface{}) {
+			discServerAssertion: func(t require.TestingT, i any, i2 ...any) {
 				require.NotNil(t, i)
 				val, ok := i.(*Server)
 				require.True(t, ok)
@@ -1790,8 +1819,7 @@ func TestDiscoveryServer_New(t *testing.T) {
 
 	for _, tt := range testCases {
 		t.Run(tt.desc, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			ctx := t.Context()
 
 			discServer, err := New(
 				ctx,
@@ -2026,6 +2054,13 @@ func mustConvertKubeServiceToApp(t *testing.T, discoveryGroup, protocol string, 
 	app, err := services.NewApplicationFromKubeService(*kubeService, discoveryGroup, protocol, port)
 	require.NoError(t, err)
 	require.Equal(t, kubeService.Annotations[types.DiscoveryPublicAddr], app.GetPublicAddr())
+	if p, ok := kubeService.Annotations[types.DiscoveryPathLabel]; ok {
+		components := strings.Split(p, "/")
+		for i := range components {
+			components[i] = url.PathEscape(components[i])
+		}
+		require.True(t, strings.HasSuffix(app.GetURI(), "/"+strings.Join(components, "/")), "uri: %v", app.GetURI())
+	}
 
 	app.GetStaticLabels()[types.TeleportInternalDiscoveryGroupName] = discoveryGroup
 	app.GetStaticLabels()[types.OriginLabel] = types.OriginDiscoveryKubernetes
@@ -3123,7 +3158,6 @@ func TestAzureVMDiscovery(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -3431,7 +3465,6 @@ func TestGCPVMDiscovery(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

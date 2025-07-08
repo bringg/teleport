@@ -241,7 +241,7 @@ func TestBooleanParsing(t *testing.T) {
 	}
 	for i, tc := range testCases {
 		msg := fmt.Sprintf("test case %v", i)
-		conf, err := ReadFromString(base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf(`
+		conf, err := ReadFromString(base64.StdEncoding.EncodeToString(fmt.Appendf(nil, `
 teleport:
   advertise_ip: 10.10.10.1
 proxy_service:
@@ -250,7 +250,7 @@ proxy_service:
 auth_service:
   enabled: yes
   disconnect_expired_cert: %v
-`, tc.s, tc.s))))
+`, tc.s, tc.s)))
 		require.NoError(t, err, msg)
 		require.Equal(t, tc.b, conf.Proxy.TrustXForwardedFor.Value(), msg)
 		require.Equal(t, tc.b, conf.Auth.DisconnectExpiredCert.Value, msg)
@@ -270,13 +270,13 @@ func TestDuration(t *testing.T) {
 	}
 	for i, tc := range testCases {
 		comment := fmt.Sprintf("test case %v", i)
-		conf, err := ReadFromString(base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf(`
+		conf, err := ReadFromString(base64.StdEncoding.EncodeToString(fmt.Appendf(nil, `
 teleport:
   advertise_ip: 10.10.10.1
 auth_service:
   enabled: yes
   client_idle_timeout: %v
-`, tc.s))))
+`, tc.s)))
 		require.NoError(t, err, comment)
 		require.Equal(t, tc.d, conf.Auth.ClientIdleTimeout.Value(), comment)
 	}
@@ -445,6 +445,15 @@ func TestConfigReading(t *testing.T) {
 					PublicAddr:    "foo.example.com",
 					StaticLabels:  Labels,
 					DynamicLabels: CommandLabels,
+				},
+				{
+					Name:         "mcp-everything",
+					StaticLabels: Labels,
+					MCP: &MCP{
+						Command:       "docker",
+						RunAsHostUser: "docker",
+						Args:          []string{"run", "-i", "--rm", "mcp/everything"},
+					},
 				},
 			},
 			ResourceMatchers: []ResourceMatcher{
@@ -780,7 +789,7 @@ func TestApplyConfig(t *testing.T) {
 	require.Equal(t, "tcp://peerhost:1234", cfg.Proxy.PeerAddress.FullAddress())
 	require.Equal(t, "tcp://peer.example:1234", cfg.Proxy.PeerPublicAddr.FullAddress())
 	require.True(t, cfg.Proxy.IdP.SAMLIdP.Enabled)
-	require.Equal(t, "", cfg.Proxy.IdP.SAMLIdP.BaseURL)
+	require.Empty(t, cfg.Proxy.IdP.SAMLIdP.BaseURL)
 
 	require.Equal(t, "tcp://127.0.0.1:3000", cfg.DiagnosticAddr.FullAddress())
 
@@ -796,7 +805,7 @@ func TestApplyConfig(t *testing.T) {
 		},
 		Spec: types.AuthPreferenceSpecV2{
 			Type:         constants.Local,
-			SecondFactor: constants.SecondFactorOptional,
+			SecondFactor: constants.SecondFactorWebauthn,
 			Webauthn: &types.Webauthn{
 				RPID: "goteleport.com",
 				AttestationAllowedCAs: []string{
@@ -1304,7 +1313,7 @@ func TestTunnelStrategy(t *testing.T) {
 		config         string
 		readErr        require.ErrorAssertionFunc
 		applyErr       require.ErrorAssertionFunc
-		tunnelStrategy interface{}
+		tunnelStrategy any
 	}{
 		{
 			desc: "Ensure default is used when no tunnel strategy is given",
@@ -1367,7 +1376,7 @@ func TestTunnelStrategy(t *testing.T) {
 			err = ApplyFileConfig(conf, cfg)
 			tc.applyErr(t, err)
 
-			var actualStrategy interface{}
+			var actualStrategy any
 			if cfg.Auth.NetworkingConfig == nil {
 			} else if s := cfg.Auth.NetworkingConfig.GetAgentMeshTunnelStrategy(); s != nil {
 				actualStrategy = s
@@ -1642,6 +1651,15 @@ func makeConfigFixture() string {
 			PublicAddr:    "foo.example.com",
 			StaticLabels:  Labels,
 			DynamicLabels: CommandLabels,
+		},
+		{
+			Name:         "mcp-everything",
+			StaticLabels: Labels,
+			MCP: &MCP{
+				Command:       "docker",
+				Args:          []string{"run", "-i", "--rm", "mcp/everything"},
+				RunAsHostUser: "docker",
+			},
 		},
 	}
 	conf.Apps.ResourceMatchers = []ResourceMatcher{
@@ -1929,10 +1947,10 @@ func TestMergingCAPinConfig(t *testing.T) {
 		t.Run(tt.desc, func(t *testing.T) {
 			clf := CommandLineFlags{
 				CAPins: tt.cliPins,
-				ConfigString: base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf(
+				ConfigString: base64.StdEncoding.EncodeToString(fmt.Appendf(nil,
 					configWithCAPins,
 					tt.configPins,
-				))),
+				)),
 			}
 			cfg := servicecfg.MakeDefaultConfig()
 			require.Empty(t, cfg.CAPins)
@@ -2358,6 +2376,22 @@ func TestWindowsDesktopService(t *testing.T) {
 			},
 		},
 		{
+			desc:        "NOK - legacy discovery and new discovery_configs both specified",
+			expectError: require.Error,
+			mutate: func(fc *FileConfig) {
+				fc.WindowsDesktop.Discovery = LDAPDiscoveryConfig{
+					BaseDN: "*",
+				}
+				fc.WindowsDesktop.DiscoveryConfigs = []LDAPDiscoveryConfig{
+					{BaseDN: "OU=stage,DC=example,DC=com"},
+					{BaseDN: "OU=prod,DC=example,DC=com"},
+				}
+				fc.WindowsDesktop.LDAP = LDAPConfig{
+					Addr: "something",
+				}
+			},
+		},
+		{
 			desc:        "OK - valid config",
 			expectError: require.NoError,
 			mutate: func(fc *FileConfig) {
@@ -2492,6 +2526,19 @@ app_service:
 app_service:
   enabled: true
   apps:
+    -
+      name: foo
+      use_any_proxy_public_addr: true
+      uri: "http://127.0.0.1:8080"
+`,
+			name:   "app with use_any_proxy_public_addr",
+			outErr: require.NoError,
+		},
+		{
+			inConfigString: `
+app_service:
+  enabled: true
+  apps:
     - name: foo
       uri: "tcp://127.0.0.1"
       tcp_ports:
@@ -2550,7 +2597,7 @@ func TestAppsCLF(t *testing.T) {
 			inAppURI:         "",
 			inLegacyAppFlags: true,
 			outApps:          nil,
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "application name (--app-name) and URI (--app-uri) flags are both required to join application proxy to the cluster")
 			},
@@ -2561,7 +2608,7 @@ func TestAppsCLF(t *testing.T) {
 			inAppName: "",
 			inAppURI:  "",
 			outApps:   nil,
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "to join application proxy to the cluster provide application name (--name) and either URI (--uri) or Cloud type (--cloud)")
 			},
@@ -2573,7 +2620,7 @@ func TestAppsCLF(t *testing.T) {
 			inAppURI:         "http://localhost:8080",
 			inLegacyAppFlags: true,
 			outApps:          nil,
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "application name (--app-name) is required to join application proxy to the cluster")
 			},
@@ -2584,7 +2631,7 @@ func TestAppsCLF(t *testing.T) {
 			inAppName: "",
 			inAppURI:  "http://localhost:8080",
 			outApps:   nil,
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "to join application proxy to the cluster provide application name (--name)")
 			},
@@ -2596,7 +2643,7 @@ func TestAppsCLF(t *testing.T) {
 			inAppURI:         "",
 			inLegacyAppFlags: true,
 			outApps:          nil,
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "URI (--app-uri) flag is required to join application proxy to the cluster")
 			},
@@ -2607,7 +2654,7 @@ func TestAppsCLF(t *testing.T) {
 			inAppName: "foo",
 			inAppURI:  "",
 			outApps:   nil,
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "to join application proxy to the cluster provide URI (--uri) or Cloud type (--cloud)")
 			},
@@ -2646,16 +2693,16 @@ func TestAppsCLF(t *testing.T) {
 			inAppName: "-foo",
 			inAppURI:  "http://localhost:8080",
 			outApps:   nil,
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
-				require.ErrorContains(t, err, "application name \"-foo\" must be a valid DNS subdomain: https://goteleport.com/docs/enroll-resources/application-access/guides/connecting-apps/#application-name")
+				require.ErrorContains(t, err, "application name \"-foo\" must be a lower case valid DNS subdomain: https://goteleport.com/docs/enroll-resources/application-access/guides/connecting-apps/#application-name")
 			},
 		},
 		{
 			desc:      "missing uri",
 			inAppName: "foo",
 			outApps:   nil,
-			requireError: func(t require.TestingT, err error, i ...interface{}) {
+			requireError: func(t require.TestingT, err error, i ...any) {
 				require.True(t, trace.IsBadParameter(err))
 				require.ErrorContains(t, err, "missing application \"foo\" URI")
 			},
@@ -3024,7 +3071,6 @@ func TestDatabaseCLIFlags(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.desc, func(t *testing.T) {
 			t.Parallel()
 
@@ -3216,6 +3262,27 @@ func TestApplyKeyStoreConfig(t *testing.T) {
 				"HSM pin file (%s) must not be world-readable",
 				worldReadablePinFilePath,
 			),
+		},
+		{
+			name: "correct config with max sessions",
+			auth: Auth{
+				CAKeyParams: &CAKeyParams{
+					PKCS11: &PKCS11{
+						ModulePath:  securePKCS11LibPath,
+						TokenLabel:  "foo",
+						SlotNumber:  &slotNumber,
+						MaxSessions: 100,
+					},
+				},
+			},
+			want: servicecfg.KeystoreConfig{
+				PKCS11: servicecfg.PKCS11Config{
+					TokenLabel:  "foo",
+					SlotNumber:  &slotNumber,
+					MaxSessions: 100,
+					Path:        securePKCS11LibPath,
+				},
+			},
 		},
 		{
 			name: "correct gcp config",
@@ -3602,11 +3669,11 @@ jamf_service:
 func TestAuthHostedPlugins(t *testing.T) {
 	t.Parallel()
 
-	badParameter := func(t require.TestingT, err error, msgAndArgs ...interface{}) {
+	badParameter := func(t require.TestingT, err error, msgAndArgs ...any) {
 		require.Error(t, err)
 		require.True(t, trace.IsBadParameter(err), `expected "bad parameter", but got %v`, err)
 	}
-	notExist := func(t require.TestingT, err error, msgAndArgs ...interface{}) {
+	notExist := func(t require.TestingT, err error, msgAndArgs ...any) {
 		require.Error(t, err)
 		require.ErrorIs(t, err, os.ErrNotExist, `expected "does not exist", but got %v`, err)
 	}
@@ -3956,7 +4023,7 @@ func TestApplyOktaConfig(t *testing.T) {
 					EnabledFlag: "yes",
 				},
 			},
-			errAssertionFunc: func(tt require.TestingT, err error, i ...interface{}) {
+			errAssertionFunc: func(tt require.TestingT, err error, i ...any) {
 				require.ErrorIs(t, err, trace.BadParameter("okta_service is enabled but no api_endpoint is specified"))
 			},
 		},
@@ -3969,7 +4036,7 @@ func TestApplyOktaConfig(t *testing.T) {
 				},
 				APIEndpoint: `bad%url`,
 			},
-			errAssertionFunc: func(tt require.TestingT, err error, i ...interface{}) {
+			errAssertionFunc: func(tt require.TestingT, err error, i ...any) {
 				require.ErrorIs(t, err, trace.BadParameter(`malformed URL bad%%url`))
 			},
 		},
@@ -3982,7 +4049,7 @@ func TestApplyOktaConfig(t *testing.T) {
 				},
 				APIEndpoint: `http://`,
 			},
-			errAssertionFunc: func(tt require.TestingT, err error, i ...interface{}) {
+			errAssertionFunc: func(tt require.TestingT, err error, i ...any) {
 				require.ErrorIs(t, err, trace.BadParameter("api_endpoint has no host"))
 			},
 		},
@@ -3995,7 +4062,7 @@ func TestApplyOktaConfig(t *testing.T) {
 				},
 				APIEndpoint: `//hostname`,
 			},
-			errAssertionFunc: func(tt require.TestingT, err error, i ...interface{}) {
+			errAssertionFunc: func(tt require.TestingT, err error, i ...any) {
 				require.ErrorIs(t, err, trace.BadParameter("api_endpoint has no scheme"))
 			},
 		},
@@ -4007,7 +4074,7 @@ func TestApplyOktaConfig(t *testing.T) {
 				},
 				APIEndpoint: "https://test-endpoint",
 			},
-			errAssertionFunc: func(tt require.TestingT, err error, i ...interface{}) {
+			errAssertionFunc: func(tt require.TestingT, err error, i ...any) {
 				require.ErrorIs(t, err, trace.BadParameter("okta_service is enabled but no api_token_path is specified"))
 			},
 		},
@@ -4020,7 +4087,7 @@ func TestApplyOktaConfig(t *testing.T) {
 				APIEndpoint:  "https://test-endpoint",
 				APITokenPath: "/non-existent/path",
 			},
-			errAssertionFunc: func(tt require.TestingT, err error, i ...interface{}) {
+			errAssertionFunc: func(tt require.TestingT, err error, i ...any) {
 				require.ErrorIs(t, err, trace.BadParameter("error trying to find file %s", i...))
 			},
 		},
@@ -4036,7 +4103,7 @@ func TestApplyOktaConfig(t *testing.T) {
 					SyncAccessListsFlag: "yes",
 				},
 			},
-			errAssertionFunc: func(tt require.TestingT, err error, i ...interface{}) {
+			errAssertionFunc: func(tt require.TestingT, err error, i ...any) {
 				require.ErrorIs(t, err, trace.BadParameter("default owners must be set when access list import is enabled"))
 			},
 		},
@@ -4056,7 +4123,7 @@ func TestApplyOktaConfig(t *testing.T) {
 					},
 				},
 			},
-			errAssertionFunc: func(t require.TestingT, err error, i ...interface{}) {
+			errAssertionFunc: func(t require.TestingT, err error, i ...any) {
 				require.ErrorContains(t, err, "error parsing group filter: ^admin-.[[[*$")
 			},
 		},
@@ -4076,7 +4143,7 @@ func TestApplyOktaConfig(t *testing.T) {
 					},
 				},
 			},
-			errAssertionFunc: func(t require.TestingT, err error, i ...interface{}) {
+			errAssertionFunc: func(t require.TestingT, err error, i ...any) {
 				require.ErrorContains(t, err, "error parsing app filter: ^admin-.[[[*$")
 			},
 		},

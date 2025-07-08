@@ -122,14 +122,11 @@ func NewTestCAWithConfig(config TestCAConfig) *types.CertAuthorityV2 {
 		if err != nil {
 			panic(err)
 		}
-		keyPEM, err = keys.MarshalPrivateKey(signer)
+		key, err = keys.NewPrivateKey(signer)
 		if err != nil {
 			panic(err)
 		}
-		key, err = keys.NewPrivateKey(signer, keyPEM)
-		if err != nil {
-			panic(err)
-		}
+		keyPEM = key.PrivateKeyPEM()
 	}
 
 	ca := &types.CertAuthorityV2{
@@ -157,7 +154,7 @@ func NewTestCAWithConfig(config TestCAConfig) *types.CertAuthorityV2 {
 
 	// Add TLS keys if necessary.
 	switch config.Type {
-	case types.UserCA, types.HostCA, types.DatabaseCA, types.DatabaseClientCA, types.SAMLIDPCA, types.SPIFFECA:
+	case types.UserCA, types.HostCA, types.DatabaseCA, types.DatabaseClientCA, types.SAMLIDPCA, types.SPIFFECA, types.AWSRACA:
 		cert, err := tlsca.GenerateSelfSignedCAWithConfig(tlsca.GenerateCAConfig{
 			Signer: key.Signer,
 			Entity: pkix.Name{
@@ -178,7 +175,7 @@ func NewTestCAWithConfig(config TestCAConfig) *types.CertAuthorityV2 {
 
 	// Add JWT keys if necessary.
 	switch config.Type {
-	case types.JWTSigner, types.OIDCIdPCA, types.SPIFFECA, types.OktaCA:
+	case types.JWTSigner, types.OIDCIdPCA, types.SPIFFECA, types.OktaCA, types.BoundKeypairCA:
 		pubKeyPEM, err := keys.MarshalPublicKey(key.Public())
 		if err != nil {
 			panic(err)
@@ -207,11 +204,11 @@ type ServicesTestSuite struct {
 	// managed by the Auth service directly (static tokens).
 	// Used by some tests to differentiate between a server
 	// and client interface.
-	LocalConfigS  services.ClusterConfiguration
+	LocalConfigS  services.ClusterConfigurationInternal
 	EventsS       types.Events
 	UsersS        services.UsersService
 	RestrictionsS services.Restrictions
-	ChangesC      chan interface{}
+	ChangesC      chan any
 	Clock         *clockwork.FakeClock
 }
 
@@ -223,7 +220,7 @@ func (s *ServicesTestSuite) Users() services.UsersService {
 }
 
 func userSlicesEqual(t *testing.T, a []types.User, b []types.User) {
-	require.EqualValuesf(t, len(a), len(b), "a: %#v b: %#v", a, b)
+	require.Lenf(t, a, len(b), "a: %#v b: %#v", a, b)
 
 	sort.Sort(services.Users(a))
 	sort.Sort(services.Users(b))
@@ -612,38 +609,6 @@ func newReverseTunnel(clusterName string, dialAddrs []string) *types.ReverseTunn
 	}
 }
 
-func (s *ServicesTestSuite) ReverseTunnelsCRUD(t *testing.T) {
-	ctx := context.Background()
-
-	out, err := s.PresenceS.GetReverseTunnels(ctx)
-	require.NoError(t, err)
-	require.Empty(t, out)
-
-	tunnel := newReverseTunnel("example.com", []string{"example.com:2023"})
-	require.NoError(t, s.PresenceS.UpsertReverseTunnel(ctx, tunnel))
-
-	out, err = s.PresenceS.GetReverseTunnels(ctx)
-	require.NoError(t, err)
-	require.Len(t, out, 1)
-	require.Empty(t, cmp.Diff(out, []types.ReverseTunnel{tunnel}, cmpopts.IgnoreFields(types.Metadata{}, "Revision")))
-
-	err = s.PresenceS.DeleteReverseTunnel(ctx, tunnel.Spec.ClusterName)
-	require.NoError(t, err)
-
-	out, err = s.PresenceS.GetReverseTunnels(ctx)
-	require.NoError(t, err)
-	require.Empty(t, out)
-
-	err = s.PresenceS.UpsertReverseTunnel(ctx, newReverseTunnel("", []string{"127.0.0.1:1234"}))
-	require.True(t, trace.IsBadParameter(err))
-
-	err = s.PresenceS.UpsertReverseTunnel(ctx, newReverseTunnel("example.com", []string{""}))
-	require.True(t, trace.IsBadParameter(err))
-
-	err = s.PresenceS.UpsertReverseTunnel(ctx, newReverseTunnel("example.com", []string{}))
-	require.True(t, trace.IsBadParameter(err))
-}
-
 func (s *ServicesTestSuite) PasswordCRUD(t *testing.T) {
 	ctx := context.Background()
 
@@ -764,7 +729,7 @@ func (s *ServicesTestSuite) TokenCRUD(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, cmp.Diff(out, v2))
 
-	// Test delete all tokens
+	// Test delete tokens
 	tok, err = types.NewProvisionToken("token1", types.SystemRoles{types.RoleAuth, types.RoleNode}, time.Time{})
 	require.NoError(t, err)
 	require.NoError(t, s.ProvisioningS.UpsertToken(ctx, tok))
@@ -777,7 +742,10 @@ func (s *ServicesTestSuite) TokenCRUD(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, tokens, 2)
 
-	err = s.ProvisioningS.DeleteAllTokens()
+	err = s.ProvisioningS.DeleteToken(ctx, tokens[0].GetName())
+	require.NoError(t, err)
+
+	err = s.ProvisioningS.DeleteToken(ctx, tokens[1].GetName())
 	require.NoError(t, err)
 
 	tokens, err = s.ProvisioningS.GetTokens(ctx)
@@ -1325,27 +1293,28 @@ func CollectOptions(opts ...Option) Options {
 
 // ClusterName tests cluster name.
 func (s *ServicesTestSuite) ClusterName(t *testing.T, opts ...Option) {
+	ctx := context.Background()
 	clusterName, err := services.NewClusterNameWithRandomID(types.ClusterNameSpecV2{
 		ClusterName: "example.com",
 	})
 	require.NoError(t, err)
-	err = s.ConfigS.SetClusterName(clusterName)
+	err = s.LocalConfigS.SetClusterName(clusterName)
 	require.NoError(t, err)
 
-	gotName, err := s.ConfigS.GetClusterName()
+	gotName, err := s.ConfigS.GetClusterName(ctx)
 	require.NoError(t, err)
 	require.Empty(t, cmp.Diff(clusterName, gotName, cmpopts.IgnoreFields(types.Metadata{}, "Revision")))
 
-	err = s.ConfigS.DeleteClusterName()
+	err = s.LocalConfigS.DeleteClusterName()
 	require.NoError(t, err)
 
-	_, err = s.ConfigS.GetClusterName()
+	_, err = s.ConfigS.GetClusterName(ctx)
 	require.True(t, trace.IsNotFound(err))
 
-	err = s.ConfigS.UpsertClusterName(clusterName)
+	err = s.LocalConfigS.UpsertClusterName(clusterName)
 	require.NoError(t, err)
 
-	gotName, err = s.ConfigS.GetClusterName()
+	gotName, err = s.ConfigS.GetClusterName(ctx)
 	require.NoError(t, err)
 	require.Empty(t, cmp.Diff(clusterName, gotName, cmpopts.IgnoreFields(types.Metadata{}, "Revision")))
 }
@@ -1477,7 +1446,7 @@ func (s *ServicesTestSuite) SemaphoreFlakiness(t *testing.T) {
 	lock, err := services.AcquireSemaphoreLock(cancelCtx, cfg)
 	require.NoError(t, err)
 
-	for i := 0; i < renewals; i++ {
+	for range renewals {
 		select {
 		case <-lock.Renewed():
 			continue
@@ -1500,7 +1469,7 @@ func (s *ServicesTestSuite) SemaphoreContention(t *testing.T) {
 	ctx := context.Background()
 	const locks int64 = 50
 	const iters = 5
-	for i := 0; i < iters; i++ {
+	for i := range iters {
 		cfg := services.SemaphoreLockConfig{
 			Service: s.PresenceS,
 			Expiry:  time.Hour,
@@ -1515,13 +1484,13 @@ func (s *ServicesTestSuite) SemaphoreContention(t *testing.T) {
 		// background keepalive activity.
 		cancelCtx, cancel := context.WithCancel(ctx)
 		acquireErrs := make(chan error, locks)
-		for i := int64(0); i < locks; i++ {
+		for range locks {
 			go func() {
 				_, err := services.AcquireSemaphoreLock(cancelCtx, cfg)
 				acquireErrs <- err
 			}()
 		}
-		for i := int64(0); i < locks; i++ {
+		for range locks {
 			require.NoError(t, <-acquireErrs)
 		}
 		cancel()
@@ -1555,7 +1524,7 @@ func (s *ServicesTestSuite) SemaphoreConcurrency(t *testing.T) {
 	var success int64
 	var failure int64
 	var wg sync.WaitGroup
-	for i := int64(0); i < attempts; i++ {
+	for range attempts {
 		wg.Add(1)
 		go func() {
 			_, err := services.AcquireSemaphoreLock(cancelCtx, cfg)
@@ -1608,7 +1577,7 @@ func (s *ServicesTestSuite) SemaphoreLock(t *testing.T) {
 
 	timeout := time.After(time.Second)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		select {
 		case <-lock.Done():
 			t.Fatalf("Unexpected lock failure: %v", lock.Wait())
@@ -1846,9 +1815,12 @@ func (s *ServicesTestSuite) Events(t *testing.T) {
 			},
 			crud: func(context.Context) types.Resource {
 				tunnel := newReverseTunnel("example.com", []string{"example.com:2023"})
-				require.NoError(t, s.PresenceS.UpsertReverseTunnel(ctx, tunnel))
+				_, err := s.PresenceS.UpsertReverseTunnel(ctx, tunnel)
+				require.NoError(t, err)
 
-				out, err := s.PresenceS.GetReverseTunnels(context.Background())
+				out, _, err := s.PresenceS.ListReverseTunnels(
+					ctx, 0, "",
+				)
 				require.NoError(t, err)
 
 				err = s.PresenceS.DeleteReverseTunnel(ctx, tunnel.Spec.ClusterName)
@@ -1909,19 +1881,19 @@ func (s *ServicesTestSuite) EventsClusterConfig(t *testing.T) {
 			kind: types.WatchKind{
 				Kind: types.KindClusterName,
 			},
-			crud: func(context.Context) types.Resource {
+			crud: func(ctx context.Context) types.Resource {
 				clusterName, err := services.NewClusterNameWithRandomID(types.ClusterNameSpecV2{
 					ClusterName: "example.com",
 				})
 				require.NoError(t, err)
 
-				err = s.ConfigS.UpsertClusterName(clusterName)
+				err = s.LocalConfigS.UpsertClusterName(clusterName)
 				require.NoError(t, err)
 
-				out, err := s.ConfigS.GetClusterName()
+				out, err := s.ConfigS.GetClusterName(ctx)
 				require.NoError(t, err)
 
-				err = s.ConfigS.DeleteClusterName()
+				err = s.LocalConfigS.DeleteClusterName()
 				require.NoError(t, err)
 				return out
 			},

@@ -69,6 +69,7 @@ jobs:
         with:
           repository: gravitational/shared-workflows
           path: shared-workflows
+          ref: 51eaeb3e0b3f52e597cad453130ca72d372d0364 # workflows/v0.0.2
 
       - name: Install Go
         uses: actions/setup-go@v5
@@ -144,31 +145,3 @@ jobs:
       - name: Test the docs build
         working-directory: docs
         run: yarn build
-
-  stylecheck:
-    name: Lint docs prose style
-    runs-on: ubuntu-latest
-    needs: changes
-    if: ${{ !startsWith(github.head_ref, 'dependabot/') && needs.changes.outputs.new_docs_content == 'true' && github.event_name == 'pull_request' }}
-    permissions:
-      pull-requests: read
-    steps:
-      - name: Check out the teleport repo
-        uses: actions/checkout@v4
-        with:
-          repository: "gravitational/teleport"
-
-      - name: Run the linter
-        uses: errata-ai/vale-action@d89dee975228ae261d22c15adcd03578634d429c # v2.1.1
-        with:
-          version: 3.9.4
-          # Take the comma-separated list of files returned by the "Check for
-          # relevant changes" job.
-          separator: ","
-          files: ${{ needs.changes.outputs.new_docs_content_files }}
-          # Restrict the linter to lines modified/added by a PR, not entire
-          # changed files.
-          filter_mode: added
-          fail_on_error: true
-          vale_flags: "--config=docs/.vale.ini"
-

@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"image/png"
 	"net/url"
+	"slices"
 
 	"github.com/gravitational/trace"
 	"github.com/pquerna/otp"
@@ -191,12 +192,13 @@ func (a *Server) createTOTPUserTokenSecrets(ctx context.Context, token types.Use
 }
 
 func (a *Server) newTOTPKey(user string) (*otp.Key, *totp.GenerateOpts, error) {
+	ctx := context.TODO()
 	// Fetch account name to display in OTP apps.
 	accountName, err := formatAccountName(a, user, a.AuthServiceName)
 	if err != nil {
 		return nil, nil, trace.Wrap(err)
 	}
-	clusterName, err := a.GetClusterName()
+	clusterName, err := a.GetClusterName(ctx)
 	if err != nil {
 		return nil, nil, trace.Wrap(err)
 	}
@@ -464,10 +466,8 @@ func (a *Server) verifyUserToken(ctx context.Context, token types.UserToken, all
 		return trace.AccessDenied("invalid token")
 	}
 
-	for _, kind := range allowedKinds {
-		if token.GetSubKind() == kind {
-			return nil
-		}
+	if slices.Contains(allowedKinds, token.GetSubKind()) {
+		return nil
 	}
 
 	a.logger.DebugContext(ctx, "Invalid token",
