@@ -47,6 +47,7 @@ var AllPluginTypes = []PluginType{
 	PluginTypeDatadog,
 	PluginTypeAWSIdentityCenter,
 	PluginTypeEmail,
+	PluginTypeIncidentio,
 }
 
 const (
@@ -88,6 +89,8 @@ const (
 	PluginTypeMSTeams = "msteams"
 	// PluginTypeNetIQ indicates a NetIQ integration
 	PluginTypeNetIQ = "netiq"
+	// PluginTypeIncidentio is the incident.io access request plugin
+	PluginTypeIncidentio = "incidentio"
 )
 
 // PluginSubkind represents the type of the plugin, e.g., access request, MDM etc.
@@ -767,7 +770,6 @@ const (
 )
 
 func (c *PluginAWSICSettings) CheckAndSetDefaults() error {
-
 	// Handle legacy records that pre-date the polymorphic Credentials settings
 	// TODO(tcsc): remove this check in v19
 	if c.Credentials == nil {
