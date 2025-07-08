@@ -7,7 +7,7 @@ FROM --platform=${BUILDPLATFORM} alpine:3.20.0 as extractor
 ARG ARTIFACT_NAME=access-incidentio
 ARG TELEPORT_VERSION=17.5.4
 ARG TARGETOS=linux
-ARG TARGETARCH=arm64
+ARG TARGETARCH=amd64
 ARG FILENAME=teleport-${ARTIFACT_NAME}-v${TELEPORT_VERSION}-${TARGETOS}-${TARGETARCH}-bin.tar.gz # Optional override
 
 
