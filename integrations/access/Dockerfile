@@ -5,7 +5,7 @@ ARG BASE_IMAGE=gcr.io/distroless/static-debian12
 FROM --platform=${BUILDPLATFORM} alpine:3.20.0 AS extractor
 
 ARG ARTIFACT_NAME=access-incidentio
-ARG TELEPORT_VERSION=18.0.0
+ARG TELEPORT_VERSION=18.1.0
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 ARG FILENAME=teleport-${ARTIFACT_NAME}-v${TELEPORT_VERSION}-${TARGETOS}-${TARGETARCH}-bin.tar.gz # Optional override
