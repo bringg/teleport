@@ -38,7 +38,7 @@ import (
 	"github.com/gravitational/teleport/lib/backend/memory"
 	"github.com/gravitational/teleport/lib/inventory"
 	"github.com/gravitational/teleport/lib/services/local"
-	"github.com/gravitational/teleport/lib/utils"
+	"github.com/gravitational/teleport/lib/utils/log/logtest"
 )
 
 func TestSampleAgentsFromGroup(t *testing.T) {
@@ -50,7 +50,7 @@ func TestSampleAgentsFromGroup(t *testing.T) {
 		cancelFunc: func() {},
 		clock:      clock,
 		ServerID:   uuid.NewString(),
-		logger:     utils.NewSlogLoggerForTests(),
+		logger:     logtest.NewLogger(),
 		Services: &Services{
 			// The inventory is running heartbeats on the background.
 			// If we don't create a presence service this will cause panics.
@@ -125,7 +125,7 @@ func TestSampleAgentsFromGroup(t *testing.T) {
 	require.Less(t, conflicts, 4)
 
 	// Test execution: check that agents not belonging to any group are sampled whe requesting the catch-all group.
-	canariesCatchAll, err := auth.SampleAgentsFromAutoUpdateGroup(t.Context(), testGroupName, sampleSize, []string{"group-a", testCatchAllGroupName})
+	canariesCatchAll, err := auth.SampleAgentsFromAutoUpdateGroup(t.Context(), testCatchAllGroupName, sampleSize, []string{"group-a", testCatchAllGroupName})
 	require.NoError(t, err)
 	require.Len(t, canariesCatchAll, sampleSize)
 	canarySet = make(map[string]*autoupdatev1pb.Canary)
@@ -134,6 +134,15 @@ func TestSampleAgentsFromGroup(t *testing.T) {
 	}
 	require.Len(t, canarySet, sampleSize, "some canary got duplicated")
 
+	// Test execution: check that agents belonging to the catch-all group are sampled.
+	canariesCatchAll, err = auth.SampleAgentsFromAutoUpdateGroup(t.Context(), testGroupName, sampleSize, []string{"group-a", testGroupName})
+	require.NoError(t, err)
+	require.Len(t, canariesCatchAll, sampleSize)
+	canarySet = make(map[string]*autoupdatev1pb.Canary)
+	for _, canary := range canariesCatchAll {
+		canarySet[canary.UpdaterId] = canary
+	}
+	require.Len(t, canarySet, sampleSize, "some canary got duplicated")
 }
 
 func TestLookupAgentInInventory(t *testing.T) {
@@ -145,7 +154,7 @@ func TestLookupAgentInInventory(t *testing.T) {
 		cancelFunc: func() {},
 		clock:      clock,
 		ServerID:   uuid.NewString(),
-		logger:     utils.NewSlogLoggerForTests(),
+		logger:     logtest.NewLogger(),
 		Services: &Services{
 			// The inventory is running heartbeats on the background.
 			// If we don't create a presence service this will cause panics.
@@ -228,7 +237,9 @@ func TestHandlerSampler(t *testing.T) {
 	generateHandles := func(i int) iter.Seq[inventory.UpstreamHandle] {
 		return func(yield func(inventory.UpstreamHandle) bool) {
 			for j := range i {
-				yield(&fakeHandle{id: j})
+				if !yield(&fakeHandle{id: j}) {
+					return
+				}
 			}
 		}
 	}

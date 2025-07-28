@@ -628,6 +628,10 @@ func (c *Client) IntegrationAWSOIDCClient() integrationv1.AWSOIDCServiceClient {
 	return integrationv1.NewAWSOIDCServiceClient(c.APIClient.GetConnection())
 }
 
+func (c *Client) IntegrationAWSRolesAnywhereClient() integrationv1.AWSRolesAnywhereServiceClient {
+	return integrationv1.NewAWSRolesAnywhereServiceClient(c.APIClient.GetConnection())
+}
+
 // UserTasksClient returns a client for managing User Task resources.
 func (c *Client) UserTasksClient() services.UserTasks {
 	return c.APIClient.UserTasksServiceClient()
@@ -1179,6 +1183,9 @@ type ProvisioningService interface {
 	// RegisterUsingToken calls the auth service API to register a new node via registration token
 	// which has been previously issued via GenerateToken
 	RegisterUsingToken(ctx context.Context, req *types.RegisterUsingTokenRequest) (*proto.Certs, error)
+
+	// ListProvisionTokens retrieves a paginated list of provision tokens.
+	ListProvisionTokens(ctx context.Context, pageSize int, pageToken string, anyRoles types.SystemRoles, botName string) ([]types.ProvisionToken, string, error)
 }
 
 type ValidateTrustedClusterRequest struct {
@@ -1447,7 +1454,7 @@ type ClientI interface {
 	services.DynamicAccess
 	services.DynamicAccessOracle
 	services.Restrictions
-	services.Apps
+	services.Applications
 	services.Databases
 	services.DatabaseServices
 	services.Kubernetes
@@ -1494,6 +1501,9 @@ type ClientI interface {
 
 	// IntegrationAWSOIDCClient returns a client to the Integration AWS OIDC gRPC service.
 	IntegrationAWSOIDCClient() integrationv1.AWSOIDCServiceClient
+
+	// IntegrationAWSRolesAnywhereClient returns a client to the Integration AWS OIDC gRPC service.
+	IntegrationAWSRolesAnywhereClient() integrationv1.AWSRolesAnywhereServiceClient
 
 	// UserTasksServiceClient returns an User Task service client.
 	UserTasksServiceClient() *usertask.Client

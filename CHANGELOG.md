@@ -113,6 +113,29 @@ windows_desktop_service:
 +      rdp_port: 9989 # optional, defaults to 3389
 ```
 
+### Agent Managed Updates v2 enhancements
+
+Managed Updates v2 can now track which version agents are running and use this
+information to progress the rollout. Only Linux agents are supported, agent
+reports for `teleport-kube-agent` will come in a future update. Reports are
+generated every minute and only count agents connected and stable for at least
+a minute.
+
+You can now observe the agent managed update progress by using
+`tctl autoupdate agents status` and `tctl autoupdate agents report`.
+
+If the strategy is `halt-on-error`, the group will be marked as done and the
+rollout will continue only after at least 90% of the agents are updated.
+
+You can now manually trigger a group, mark it as done, or rollback an update
+with `tctl`:
+
+```shell
+autoupdate agents start-update [group1, group2, ...]
+autoupdate agents mark-done [group1, group2, ...]
+autoupdate agents rollback [group1, group2, ...]
+```
+
 #### Legacy ALPN connection upgrade mode has been removed
 
 Teleport v15.1 added WebSocket upgrade support for Teleport proxies behind
@@ -205,7 +228,7 @@ When deployed with the `teleport-cluster` chart, the operator now runs in a
 separate pod. This ensures that Teleport's availability won't be impacted if
 the operator becomes unready.
 
-See [the Standalone Operator guide](docs/pages/admin-guides/infrastructure-as-code/teleport-operator/teleport-operator-standalone.mdx)
+See [the Standalone Operator guide](docs/pages/zero-trust-access/infrastructure-as-code/teleport-operator/teleport-operator-standalone.mdx)
 for installation instructions.
 
 #### Teleport Operator now supports roles v6 and v7
@@ -3738,7 +3761,7 @@ This is a minor Teleport release with a focus on new features and bug fixes.
 ### Documentation
 
 * Adopting root/leaf terminology for trusted clusters. [Trusted cluster documentation](docs/pages/admin-guides/management/admin/trustedclusters.mdx).
-* Documented Teleport FedRAMP & FIPS Support. [FedRAMP & FIPS documentation](docs/pages/admin-guides/access-controls/compliance-frameworks/fedramp.mdx).
+* Documented Teleport FedRAMP & FIPS Support. [FedRAMP & FIPS documentation](docs/pages/zero-trust-access/compliance-frameworks/fedramp.mdx).
 
 ## 4.1.11
 

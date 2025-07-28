@@ -44,6 +44,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 
+	"github.com/gravitational/teleport"
 	apiclient "github.com/gravitational/teleport/api/client"
 	proxyclient "github.com/gravitational/teleport/api/client/proxy"
 	"github.com/gravitational/teleport/api/observability/tracing"
@@ -54,9 +55,12 @@ import (
 	"github.com/gravitational/teleport/lib/observability/metrics"
 	"github.com/gravitational/teleport/lib/resumption"
 	"github.com/gravitational/teleport/lib/tbot/bot"
+	"github.com/gravitational/teleport/lib/tbot/bot/connection"
+	"github.com/gravitational/teleport/lib/tbot/bot/destination"
 	"github.com/gravitational/teleport/lib/tbot/client"
 	"github.com/gravitational/teleport/lib/tbot/config"
 	"github.com/gravitational/teleport/lib/tbot/identity"
+	"github.com/gravitational/teleport/lib/tbot/internal"
 	"github.com/gravitational/teleport/lib/tbot/readyz"
 	"github.com/gravitational/teleport/lib/tbot/ssh"
 	"github.com/gravitational/teleport/lib/utils"
@@ -89,11 +93,37 @@ var (
 	)
 )
 
+func SSHMultiplexerServiceBuilder(
+	botCfg *config.BotConfig,
+	cfg *config.SSHMultiplexerService,
+	alpnUpgradeCache *internal.ALPNUpgradeCache,
+) bot.ServiceBuilder {
+	return func(deps bot.ServiceDependencies) (bot.Service, error) {
+		svc := &SSHMultiplexerService{
+			alpnUpgradeCache:   alpnUpgradeCache,
+			botAuthClient:      deps.Client,
+			botIdentityReadyCh: deps.BotIdentityReadyCh,
+			botCfg:             botCfg,
+			cfg:                cfg,
+			proxyPinger:        deps.ProxyPinger,
+			reloadCh:           deps.ReloadCh,
+			identityGenerator:  deps.IdentityGenerator,
+			clientBuilder:      deps.ClientBuilder,
+		}
+		svc.log = deps.Logger.With(
+			teleport.ComponentKey,
+			teleport.Component(teleport.ComponentTBot, "svc", svc.String()),
+		)
+		svc.statusReporter = deps.StatusRegistry.AddService(svc.String())
+		return svc, nil
+	}
+}
+
 // SSHMultiplexerService is a long-lived local SSH proxy. It listens on a local Unix
 // socket and has a special client with support for FDPassing with OpenSSH.
 // It places an emphasis on high performance.
 type SSHMultiplexerService struct {
-	alpnUpgradeCache *alpnProxyConnUpgradeRequiredCache
+	alpnUpgradeCache *internal.ALPNUpgradeCache
 	// botAuthClient should be an auth client using the bots internal identity.
 	// This will not have any roles impersonated and should only be used to
 	// fetch CAs.
@@ -101,11 +131,10 @@ type SSHMultiplexerService struct {
 	botIdentityReadyCh <-chan struct{}
 	botCfg             *config.BotConfig
 	cfg                *config.SSHMultiplexerService
-	getBotIdentity     getBotIdentityFn
 	log                *slog.Logger
-	proxyPingCache     *proxyPingCache
-	reloadBroadcaster  *channelBroadcaster
+	proxyPinger        connection.ProxyPinger
 	statusReporter     readyz.Reporter
+	reloadCh           <-chan struct{}
 
 	identityGenerator *identity.Generator
 	clientBuilder     *client.Builder
@@ -123,7 +152,7 @@ type SSHMultiplexerService struct {
 //
 // TODO(noah): Replace this with proper atomic writing.
 // https://github.com/gravitational/teleport/issues/25462
-func writeIfChanged(ctx context.Context, dest bot.Destination, log *slog.Logger, path string, data []byte) error {
+func writeIfChanged(ctx context.Context, dest destination.Destination, log *slog.Logger, path string, data []byte) error {
 	existingData, err := dest.Read(ctx, path)
 	if err != nil {
 		log.DebugContext(
@@ -157,7 +186,7 @@ func (s *SSHMultiplexerService) writeArtifacts(
 	proxyHost string,
 	authClient *apiclient.Client,
 ) error {
-	dest := s.cfg.Destination.(*config.DestinationDirectory)
+	dest := s.cfg.Destination.(*destination.Directory)
 
 	clusterNames, err := getClusterNames(ctx, authClient, s.identity.Get().ClusterName)
 	if err != nil {
@@ -291,11 +320,11 @@ func (s *SSHMultiplexerService) setup(ctx context.Context) (
 	}
 
 	// Ping the proxy and determine if we need to upgrade the connection.
-	proxyPing, err := s.proxyPingCache.ping(ctx)
+	proxyPing, err := s.proxyPinger.Ping(ctx)
 	if err != nil {
 		return nil, nil, "", nil, trace.Wrap(err)
 	}
-	proxyAddr, err := proxyPing.proxySSHAddr()
+	proxyAddr, err := proxyPing.ProxySSHAddr()
 	if err != nil {
 		return nil, nil, "", nil, trace.Wrap(err, "determining proxy ssh addr")
 	}
@@ -309,7 +338,7 @@ func (s *SSHMultiplexerService) setup(ctx context.Context) (
 
 	connUpgradeRequired := false
 	if proxyPing.Proxy.TLSRoutingEnabled {
-		connUpgradeRequired, err = s.alpnUpgradeCache.isUpgradeRequired(
+		connUpgradeRequired, err = s.alpnUpgradeCache.IsUpgradeRequired(
 			ctx, proxyAddr, s.botCfg.Insecure,
 		)
 		if err != nil {
@@ -399,12 +428,10 @@ func (s *SSHMultiplexerService) generateIdentity(ctx context.Context) (*identity
 func (s *SSHMultiplexerService) identityRenewalLoop(
 	ctx context.Context, proxyHost string, authClient *apiclient.Client,
 ) error {
-	reloadCh, unsubscribe := s.reloadBroadcaster.subscribe()
-	defer unsubscribe()
-	err := runOnInterval(ctx, runOnIntervalConfig{
-		service: s.String(),
-		name:    "identity-renewal",
-		f: func(ctx context.Context) error {
+	err := internal.RunOnInterval(ctx, internal.RunOnIntervalConfig{
+		Service: s.String(),
+		Name:    "identity-renewal",
+		F: func(ctx context.Context) error {
 			id, err := s.generateIdentity(ctx)
 			if err != nil {
 				return trace.Wrap(err, "generating identity")
@@ -412,10 +439,10 @@ func (s *SSHMultiplexerService) identityRenewalLoop(
 			s.identity.Set(id)
 			return s.writeArtifacts(ctx, proxyHost, authClient)
 		},
-		interval:   cmp.Or(s.cfg.CredentialLifetime, s.botCfg.CredentialLifetime).RenewalInterval,
-		retryLimit: renewalRetryLimit,
-		log:        s.log,
-		reloadCh:   reloadCh,
+		Interval:   cmp.Or(s.cfg.CredentialLifetime, s.botCfg.CredentialLifetime).RenewalInterval,
+		RetryLimit: renewalRetryLimit,
+		Log:        s.log,
+		ReloadCh:   s.reloadCh,
 	})
 	return trace.Wrap(err)
 }
@@ -433,7 +460,7 @@ func (s *SSHMultiplexerService) Run(ctx context.Context) (err error) {
 	}
 	defer authClient.Close()
 
-	dest := s.cfg.Destination.(*config.DestinationDirectory)
+	dest := s.cfg.Destination.(*destination.Directory)
 	absPath, err := filepath.Abs(dest.Path)
 	if err != nil {
 		return trace.Wrap(err, "determining absolute path for destination")
@@ -558,9 +585,6 @@ func (s *SSHMultiplexerService) Run(ctx context.Context) (err error) {
 		return s.identityRenewalLoop(egCtx, proxyHost, authClient)
 	})
 
-	if s.statusReporter == nil {
-		s.statusReporter = readyz.NoopReporter()
-	}
 	s.statusReporter.Report(readyz.Healthy)
 
 	if err := eg.Wait(); err != nil {

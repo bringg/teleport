@@ -895,6 +895,8 @@ func (h *Handler) bindDefaultEndpoints() {
 	// v2 endpoint processes "suggestedLabels" field
 	h.POST("/v2/webapi/token", h.WithAuth(h.createTokenForDiscoveryHandle))
 	h.GET("/webapi/tokens", h.WithAuth(h.getTokens))
+	// used to retrieve a paginated list of tokens. Items can be filtered by roles and bot name.
+	h.GET("/v2/webapi/tokens", h.WithAuth(h.listProvisionTokens))
 	h.DELETE("/webapi/tokens", h.WithAuth(h.deleteToken))
 
 	// install script, the ':token' wildcard is a hack to make the router happy and support
@@ -1063,6 +1065,8 @@ func (h *Handler) bindDefaultEndpoints() {
 
 	// AWS IAM Roles Anywhere Integration Actions
 	h.GET("/webapi/scripts/integrations/configure/awsra-trust-anchor.sh", h.WithLimiter(h.awsRolesAnywhereConfigureTrustAnchor))
+	h.POST("/webapi/sites/:site/integrations/aws-ra/:name/ping", h.WithClusterAuth(h.awsRolesAnywherePing))
+	h.POST("/webapi/sites/:site/integrations/aws-ra/:name/listprofiles", h.WithClusterAuth(h.awsRolesAnywhereListProfiles))
 
 	// SAML IDP integration endpoints
 	h.GET("/webapi/scripts/integrations/configure/gcp-workforce-saml.sh", h.WithLimiter(h.gcpWorkforceConfigScript))
@@ -1139,7 +1143,11 @@ func (h *Handler) bindDefaultEndpoints() {
 	// Create bot join tokens
 	h.POST("/webapi/sites/:site/machine-id/token", h.WithClusterAuth(h.createBotJoinToken))
 	// PUT Machine ID bot by name
+	// TODO(nicholasmarais1158) DELETE IN v20.0.0
+	// Replaced by `PUT /v2/webapi/sites/:site/machine-id/bot/:name` which allows editing more than just roles.
 	h.PUT("/webapi/sites/:site/machine-id/bot/:name", h.WithClusterAuth(h.updateBot))
+	// PUT Machine ID bot by name
+	h.PUT("/v2/webapi/sites/:site/machine-id/bot/:name", h.WithClusterAuth(h.updateBotV2))
 	// Delete Machine ID bot
 	h.DELETE("/webapi/sites/:site/machine-id/bot/:name", h.WithClusterAuth(h.deleteBot))
 
@@ -1619,6 +1627,7 @@ func (h *Handler) ping(w http.ResponseWriter, r *http.Request, p httprouter.Para
 	}
 
 	group := r.URL.Query().Get(webclient.AgentUpdateGroupParameter)
+	updaterID := r.URL.Query().Get(webclient.AgentUpdateIDParameter)
 
 	return webclient.PingResponse{
 		Auth:              authSettings,
@@ -1627,7 +1636,7 @@ func (h *Handler) ping(w http.ResponseWriter, r *http.Request, p httprouter.Para
 		MinClientVersion:  teleport.MinClientSemVer().String(),
 		ClusterName:       h.auth.clusterName,
 		AutomaticUpgrades: pr.ServerFeatures.GetAutomaticUpgrades(),
-		AutoUpdate:        h.automaticUpdateSettings184(r.Context(), group, "" /* updater UUID */),
+		AutoUpdate:        h.automaticUpdateSettings184(r.Context(), group, updaterID),
 		Edition:           modules.GetModules().BuildType(),
 		FIPS:              modules.IsBoringBinary(),
 	}, nil
@@ -1665,6 +1674,14 @@ func (h *Handler) find(w http.ResponseWriter, r *http.Request, p httprouter.Para
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)
+	}
+
+	// Now we modulate the autoupdate answer on a per-request basis.
+	// We don't want to cache one answer per updater UUID, so we take the
+	// cached result and just override what we must.
+	updaterID := r.URL.Query().Get(webclient.AgentUpdateIDParameter)
+	if updaterID != "" {
+		resp.AutoUpdate = h.automaticUpdateSettings184(r.Context(), group, updaterID)
 	}
 	return resp, nil
 }

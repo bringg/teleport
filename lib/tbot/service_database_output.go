@@ -26,15 +26,38 @@ import (
 
 	"github.com/gravitational/trace"
 
+	"github.com/gravitational/teleport"
 	apiclient "github.com/gravitational/teleport/api/client"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/client/identityfile"
 	"github.com/gravitational/teleport/lib/tbot/bot"
+	"github.com/gravitational/teleport/lib/tbot/bot/destination"
 	"github.com/gravitational/teleport/lib/tbot/client"
 	"github.com/gravitational/teleport/lib/tbot/config"
 	"github.com/gravitational/teleport/lib/tbot/identity"
+	"github.com/gravitational/teleport/lib/tbot/internal"
 	"github.com/gravitational/teleport/lib/tbot/readyz"
 )
+
+func DatabaseOutputServiceBuider(botCfg *config.BotConfig, cfg *config.DatabaseOutput) bot.ServiceBuilder {
+	return func(deps bot.ServiceDependencies) (bot.Service, error) {
+		svc := &DatabaseOutputService{
+			botAuthClient:      deps.Client,
+			botIdentityReadyCh: deps.BotIdentityReadyCh,
+			botCfg:             botCfg,
+			cfg:                cfg,
+			reloadCh:           deps.ReloadCh,
+			identityGenerator:  deps.IdentityGenerator,
+			clientBuilder:      deps.ClientBuilder,
+		}
+		svc.log = deps.Logger.With(
+			teleport.ComponentKey,
+			teleport.Component(teleport.ComponentTBot, "svc", svc.String()),
+		)
+		svc.statusReporter = deps.StatusRegistry.AddService(svc.String())
+		return svc, nil
+	}
+}
 
 // DatabaseOutputService generates the artifacts necessary to connect to a
 // database using Teleport.
@@ -43,10 +66,9 @@ type DatabaseOutputService struct {
 	botIdentityReadyCh <-chan struct{}
 	botCfg             *config.BotConfig
 	cfg                *config.DatabaseOutput
-	getBotIdentity     getBotIdentityFn
 	log                *slog.Logger
-	reloadBroadcaster  *channelBroadcaster
 	statusReporter     readyz.Reporter
+	reloadCh           <-chan struct{}
 	identityGenerator  *identity.Generator
 	clientBuilder      *client.Builder
 }
@@ -63,19 +85,16 @@ func (s *DatabaseOutputService) OneShot(ctx context.Context) error {
 }
 
 func (s *DatabaseOutputService) Run(ctx context.Context) error {
-	reloadCh, unsubscribe := s.reloadBroadcaster.subscribe()
-	defer unsubscribe()
-
-	err := runOnInterval(ctx, runOnIntervalConfig{
-		service:         s.String(),
-		name:            "output-renewal",
-		f:               s.generate,
-		interval:        cmp.Or(s.cfg.CredentialLifetime, s.botCfg.CredentialLifetime).RenewalInterval,
-		retryLimit:      renewalRetryLimit,
-		log:             s.log,
-		reloadCh:        reloadCh,
-		identityReadyCh: s.botIdentityReadyCh,
-		statusReporter:  s.statusReporter,
+	err := internal.RunOnInterval(ctx, internal.RunOnIntervalConfig{
+		Service:         s.String(),
+		Name:            "output-renewal",
+		F:               s.generate,
+		Interval:        cmp.Or(s.cfg.CredentialLifetime, s.botCfg.CredentialLifetime).RenewalInterval,
+		RetryLimit:      renewalRetryLimit,
+		Log:             s.log,
+		ReloadCh:        s.reloadCh,
+		IdentityReadyCh: s.botIdentityReadyCh,
+		StatusReporter:  s.statusReporter,
 	})
 	return trace.Wrap(err)
 }
@@ -221,7 +240,7 @@ func writeCockroachDatabaseFiles(
 	log *slog.Logger,
 	routedIdentity *identity.Identity,
 	databaseCAs []types.CertAuthority,
-	dest bot.Destination,
+	dest destination.Destination,
 ) error {
 	ctx, span := tracer.Start(
 		ctx,
@@ -259,7 +278,7 @@ func writeMongoDatabaseFiles(
 	log *slog.Logger,
 	routedIdentity *identity.Identity,
 	databaseCAs []types.CertAuthority,
-	dest bot.Destination,
+	dest destination.Destination,
 ) error {
 	ctx, span := tracer.Start(
 		ctx,

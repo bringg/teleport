@@ -395,6 +395,8 @@ func (f *fakeAWSKMSService) CreateKey(_ context.Context, input *kms.CreateKeyInp
 	switch input.KeySpec {
 	case kmstypes.KeySpecRsa2048:
 		privKeyPEM = testRSA2048PrivateKeyPEM
+	case kmstypes.KeySpecRsa4096:
+		privKeyPEM = testRSA4096PrivateKeyPEM
 	case kmstypes.KeySpecEccNistP256:
 		signer, err := cryptosuites.GenerateKeyWithAlgorithm(cryptosuites.ECDSAP256)
 		if err != nil {
@@ -836,5 +838,16 @@ func TestMultiRegionKeyReplication(t *testing.T) {
 			}
 		})
 	}
+}
 
+type fakeAuthPreferenceGetter struct {
+	suite types.SignatureAlgorithmSuite
+}
+
+func (f *fakeAuthPreferenceGetter) GetAuthPreference(context.Context) (types.AuthPreference, error) {
+	return &types.AuthPreferenceV2{
+		Spec: types.AuthPreferenceSpecV2{
+			SignatureAlgorithmSuite: f.suite,
+		},
+	}, nil
 }

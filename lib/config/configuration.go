@@ -63,7 +63,6 @@ import (
 	"github.com/gravitational/teleport/lib/limiter"
 	"github.com/gravitational/teleport/lib/modules"
 	"github.com/gravitational/teleport/lib/multiplexer"
-	"github.com/gravitational/teleport/lib/pam"
 	"github.com/gravitational/teleport/lib/service/servicecfg"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/tlsca"
@@ -143,6 +142,9 @@ type CommandLineFlags struct {
 
 	// AppPublicAddr is the public address of the application to proxy.
 	AppPublicAddr string
+
+	// MCPDemoServer enables the "Teleport Demo" MCP server.
+	MCPDemoServer bool
 
 	// DatabaseName is the name of the database to proxy.
 	DatabaseName string
@@ -1465,24 +1467,6 @@ func applySSHConfig(fc *FileConfig, cfg *servicecfg.Config) (err error) {
 	}
 	if fc.SSH.PAM != nil {
 		cfg.SSH.PAM = fc.SSH.PAM.Parse()
-
-		// If PAM is enabled, make sure that Teleport was built with PAM support
-		// and the PAM library was found at runtime.
-		if cfg.SSH.PAM.Enabled {
-			if !pam.BuildHasPAM() {
-				const errorMessage = "Unable to start Teleport: PAM was enabled in file configuration but this \n" +
-					"Teleport binary was built without PAM support. To continue either download a \n" +
-					"Teleport binary build with PAM support from https://goteleport.com/teleport \n" +
-					"or disable PAM in file configuration."
-				return trace.BadParameter("%s", errorMessage)
-			}
-			if !pam.SystemHasPAM() {
-				const errorMessage = "Unable to start Teleport: PAM was enabled in file configuration but this \n" +
-					"system does not have the needed PAM library installed. To continue either \n" +
-					"install libpam or disable PAM in file configuration."
-				return trace.BadParameter("%s", errorMessage)
-			}
-		}
 	}
 	if len(fc.SSH.PublicAddr) != 0 {
 		addrs, err := utils.AddrsFromStrings(fc.SSH.PublicAddr, defaults.SSHServerListenPort)
@@ -1943,6 +1927,9 @@ func applyAppsConfig(fc *FileConfig, cfg *servicecfg.Config) error {
 	// Enable debugging application if requested.
 	cfg.Apps.DebugApp = fc.Apps.DebugApp
 
+	// Enable the "Teleport Demo" MCP server if requested.
+	cfg.Apps.MCPDemoServer = fc.Apps.MCPDemoServer
+
 	// Configure resource watcher selectors if present.
 	for _, matcher := range fc.Apps.ResourceMatchers {
 		if matcher.AWS.AssumeRoleARN != "" {
@@ -2218,6 +2205,11 @@ func applyWindowsDesktopConfig(fc *FileConfig, cfg *servicecfg.Config) error {
 		}
 	}
 
+	locateServer := servicecfg.LocateServer{
+		Enabled: fc.WindowsDesktop.LDAP.LocateServer.Enabled,
+		Site:    fc.WindowsDesktop.LDAP.LocateServer.Site,
+	}
+
 	cfg.WindowsDesktop.LDAP = servicecfg.LDAPConfig{
 		Addr:               fc.WindowsDesktop.LDAP.Addr,
 		Username:           fc.WindowsDesktop.LDAP.Username,
@@ -2226,6 +2218,7 @@ func applyWindowsDesktopConfig(fc *FileConfig, cfg *servicecfg.Config) error {
 		InsecureSkipVerify: fc.WindowsDesktop.LDAP.InsecureSkipVerify,
 		ServerName:         fc.WindowsDesktop.LDAP.ServerName,
 		CA:                 cert,
+		LocateServer:       locateServer,
 	}
 
 	cfg.WindowsDesktop.PKIDomain = fc.WindowsDesktop.PKIDomain
@@ -2419,7 +2412,7 @@ func Configure(clf *CommandLineFlags, cfg *servicecfg.Config, legacyAppFlags boo
 	// If this process is trying to join a cluster as an application service,
 	// make sure application name and URI are provided.
 	if slices.Contains(splitRoles(clf.Roles), defaults.RoleApp) {
-		if (clf.AppName == "") && (clf.AppURI == "" && clf.AppCloud == "") {
+		if (clf.AppName == "") && (clf.AppURI == "" && clf.AppCloud == "" && !clf.MCPDemoServer) {
 			// TODO: remove legacyAppFlags once `teleport start --app-name` is removed.
 			if legacyAppFlags {
 				return trace.BadParameter("application name (--app-name) and URI (--app-uri) flags are both required to join application proxy to the cluster")
@@ -2427,19 +2420,26 @@ func Configure(clf *CommandLineFlags, cfg *servicecfg.Config, legacyAppFlags boo
 			return trace.BadParameter("to join application proxy to the cluster provide application name (--name) and either URI (--uri) or Cloud type (--cloud)")
 		}
 
-		if clf.AppName == "" {
+		if clf.AppName == "" && !clf.MCPDemoServer {
 			if legacyAppFlags {
 				return trace.BadParameter("application name (--app-name) is required to join application proxy to the cluster")
 			}
 			return trace.BadParameter("to join application proxy to the cluster provide application name (--name)")
 		}
 
-		if clf.AppURI == "" && clf.AppCloud == "" {
+		if clf.AppName != "" && clf.AppURI == "" && clf.AppCloud == "" {
 			if legacyAppFlags {
 				return trace.BadParameter("URI (--app-uri) flag is required to join application proxy to the cluster")
 			}
 			return trace.BadParameter("to join application proxy to the cluster provide URI (--uri) or Cloud type (--cloud)")
 		}
+	}
+
+	// Enable the "Teleport Demo" MCP server if requested. Make sure application
+	// service is enabled for proxying MCP servers.
+	if clf.MCPDemoServer {
+		cfg.Apps.MCPDemoServer = true
+		cfg.Apps.Enabled = true
 	}
 
 	// If application name was specified on command line, add to file

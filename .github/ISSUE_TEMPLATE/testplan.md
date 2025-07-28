@@ -966,8 +966,18 @@ on the remote host. Note that the `--callback` URL must be able to resolve to th
 
 ### Teleport Plugins
 
-- [ ] Test receiving a message via Teleport Slackbot
-- [ ] Test receiving a new Jira Ticket via Teleport Jira
+- [ ] Datadog
+- [ ] Discord
+- [ ] Email
+- [ ] Jamf
+- [ ] Jira
+- [ ] Mattermost
+- [ ] Microsoft Entra ID
+- [ ] Microsoft Teams
+- [ ] Opsgenie
+- [ ] PagerDuty
+- [ ] ServiceNow
+- [ ] Slack
 
 ### Teleport Operator
 
@@ -2083,6 +2093,7 @@ Verify that SSH works, and that resumable SSH is not interrupted across a contro
   - [ ] New EC2 instances with matching AWS tags are discovered and added to the teleport cluster
     - [ ] Large numbers of EC2 instances (51+) are all successfully added to the cluster
   - [ ] Nodes that have been discovered do not have the install script run on the node multiple times
+  - [ ] EC2 instances can be discovered in multiple accounts
 
 ## Azure Discovery
 

@@ -41,6 +41,7 @@ import (
 	"github.com/gravitational/teleport/lib/integrations/awsra/createsession"
 	"github.com/gravitational/teleport/lib/modules"
 	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/lib/utils"
 )
 
 // Cache is the subset of the cached resources that the Service queries.
@@ -130,10 +131,6 @@ func (s *ServiceConfig) CheckAndSetDefaults() error {
 
 	if s.Clock == nil {
 		s.Clock = clockwork.NewRealClock()
-	}
-
-	if s.awsRolesAnywhereCreateSessionFn == nil {
-		s.awsRolesAnywhereCreateSessionFn = createsession.CreateSession
 	}
 
 	return nil
@@ -258,6 +255,10 @@ func (s *Service) CreateIntegration(ctx context.Context, req *integrationpb.Crea
 		if errs := validation.IsDNS1035Label(req.GetIntegration().GetName()); len(errs) > 0 {
 			return nil, trace.BadParameter("integration name %q must be a lower case valid DNS subdomain so that it can be used to allow Web/CLI access", req.GetIntegration().GetName())
 		}
+
+		if err := validateAWSRolesAnywhereProfileFilters(req.Integration); err != nil {
+			return nil, trace.Wrap(err)
+		}
 	}
 
 	ig, err := s.backend.CreateIntegration(ctx, req.Integration)
@@ -306,6 +307,10 @@ func (s *Service) UpdateIntegration(ctx context.Context, req *integrationpb.Upda
 		return nil, trace.Wrap(err)
 	}
 
+	if err := validateAWSRolesAnywhereProfileFilters(req.Integration); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
 	if err := s.maybeUpdateStaticCredentials(ctx, req.Integration); err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -343,6 +348,24 @@ func (s *Service) UpdateIntegration(ctx context.Context, req *integrationpb.Upda
 	}
 
 	return igV1, nil
+}
+
+func validateAWSRolesAnywhereProfileFilters(ig types.Integration) error {
+	rolesAnywhereSpec := ig.GetAWSRolesAnywhereIntegrationSpec()
+	if rolesAnywhereSpec == nil {
+		return nil
+	}
+
+	if rolesAnywhereSpec.ProfileSyncConfig == nil {
+		return nil
+	}
+
+	for _, profileNameFilter := range rolesAnywhereSpec.ProfileSyncConfig.ProfileNameFilters {
+		if _, err := utils.CompileExpression(profileNameFilter); err != nil {
+			return trace.BadParameter("invalid filter %q, use glob-like matching or regex by adding the anchors (eg, ^regex$): %v", profileNameFilter, err)
+		}
+	}
+	return nil
 }
 
 // DeleteIntegration removes the specified Integration resource.
@@ -461,12 +484,17 @@ func (s *Service) ensureNoAssociatedResources(ctx context.Context, ig types.Inte
 
 func (s *Service) ensureNoGitHubAssociatedResources(ctx context.Context, ig types.Integration) error {
 	s.logger.DebugContext(ctx, "Checking GitHub integration associated resources", "integration", ig.GetName())
-	return trace.Wrap(clientutils.IterateResources(ctx, s.backend.ListGitServers, func(server types.Server) error {
+	for server, err := range clientutils.Resources(ctx, s.backend.ListGitServers) {
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
 		if server.GetGitHub() != nil && server.GetGitHub().Integration == ig.GetName() {
 			return trace.BadParameter("git servers associated with integration %s must be deleted first", ig.GetName())
 		}
-		return nil
-	}))
+	}
+
+	return nil
 }
 
 func (s *Service) deleteAssociatedResources(ctx context.Context, authCtx *authz.Context, ig types.Integration) error {
@@ -489,10 +517,15 @@ func (s *Service) deleteGitHubAssociatedResources(ctx context.Context, authCtx *
 		return trace.Wrap(err)
 	}
 
-	return trace.Wrap(clientutils.IterateResources(ctx, s.backend.ListGitServers, func(server types.Server) error {
-		if server.GetGitHub() == nil || server.GetGitHub().Integration != ig.GetName() {
-			return nil
+	for server, err := range clientutils.Resources(ctx, s.backend.ListGitServers) {
+		if err != nil {
+			return trace.Wrap(err)
 		}
-		return trace.Wrap(s.backend.DeleteGitServer(ctx, server.GetName()))
-	}))
+
+		if server.GetGitHub() != nil && server.GetGitHub().Integration == ig.GetName() {
+			return trace.Wrap(s.backend.DeleteGitServer(ctx, server.GetName()))
+		}
+	}
+
+	return nil
 }

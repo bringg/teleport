@@ -32,10 +32,12 @@ import (
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/client"
 	"github.com/gravitational/teleport/lib/fixtures"
+	"github.com/gravitational/teleport/lib/tbot/bot/connection"
+	"github.com/gravitational/teleport/lib/tbot/bot/destination"
 	"github.com/gravitational/teleport/lib/tbot/botfs"
 	"github.com/gravitational/teleport/lib/tbot/config"
 	"github.com/gravitational/teleport/lib/tbot/identity"
-	"github.com/gravitational/teleport/lib/utils"
+	"github.com/gravitational/teleport/lib/utils/log/logtest"
 	"github.com/gravitational/teleport/lib/utils/testutils/golden"
 )
 
@@ -139,7 +141,7 @@ func TestKubernetesOutputService_render(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 
-			dest := &config.DestinationDirectory{
+			dest := &destination.Directory{
 				Path:     dir,
 				Symlinks: botfs.SymlinksInsecure,
 				ACLs:     botfs.ACLOff,
@@ -159,7 +161,7 @@ func TestKubernetesOutputService_render(t *testing.T) {
 					Destination:       dest,
 				},
 				executablePath: fakeGetExecutablePath,
-				log:            utils.NewSlogLoggerForTests(),
+				log:            logtest.NewLogger(),
 			}
 
 			keyRing, err := NewClientKeyRing(
@@ -279,7 +281,7 @@ func Test_selectKubeConnectionMethod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			addr, sni, err := selectKubeConnectionMethod(&proxyPingResponse{
+			addr, sni, err := selectKubeConnectionMethod(&connection.ProxyPong{
 				PingResponse: tt.proxyPing,
 			})
 			require.NoError(t, err)

@@ -26,14 +26,16 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/gravitational/teleport/lib/tbot/bot"
+	"github.com/gravitational/teleport/lib/tbot/bot/destination"
+	"github.com/gravitational/teleport/lib/tbot/bot/onboarding"
 )
 
 type destinationMixinV1 struct {
-	Directory *DestinationDirectory `yaml:"directory"`
-	Memory    *DestinationMemory    `yaml:"memory"`
+	Directory *destination.Directory `yaml:"directory"`
+	Memory    *destination.Memory    `yaml:"memory"`
 }
 
-func (c *destinationMixinV1) migrate() (bot.Destination, error) {
+func (c *destinationMixinV1) migrate() (destination.Destination, error) {
 	switch {
 	case c.Memory != nil && c.Directory != nil:
 		return nil, trace.BadParameter("both 'memory' and 'directory' cannot be specified")
@@ -358,14 +360,14 @@ func (c *configV1Destination) migrate() (ServiceConfig, error) {
 }
 
 type configV1 struct {
-	Onboarding      OnboardingConfig `yaml:"onboarding"`
-	Debug           bool             `yaml:"debug"`
-	AuthServer      string           `yaml:"auth_server"`
-	CertificateTTL  time.Duration    `yaml:"certificate_ttl"`
-	RenewalInterval time.Duration    `yaml:"renewal_interval"`
-	Oneshot         bool             `yaml:"oneshot"`
-	FIPS            bool             `yaml:"fips"`
-	DiagAddr        string           `yaml:"diag_addr"`
+	Onboarding      onboarding.Config `yaml:"onboarding"`
+	Debug           bool              `yaml:"debug"`
+	AuthServer      string            `yaml:"auth_server"`
+	CertificateTTL  time.Duration     `yaml:"certificate_ttl"`
+	RenewalInterval time.Duration     `yaml:"renewal_interval"`
+	Oneshot         bool              `yaml:"oneshot"`
+	FIPS            bool              `yaml:"fips"`
+	DiagAddr        string            `yaml:"diag_addr"`
 
 	Destinations  []configV1Destination `yaml:"destinations"`
 	StorageConfig *storageConfigV1      `yaml:"storage"`
@@ -405,7 +407,7 @@ func (c *configV1) migrate() (*BotConfig, error) {
 		Onboarding: c.Onboarding,
 		Debug:      c.Debug,
 		AuthServer: c.AuthServer,
-		CredentialLifetime: CredentialLifetime{
+		CredentialLifetime: bot.CredentialLifetime{
 			TTL:             c.CertificateTTL,
 			RenewalInterval: c.RenewalInterval,
 		},
