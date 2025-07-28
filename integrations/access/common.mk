@@ -9,8 +9,8 @@ ADDFLAGS ?=
 BUILDFLAGS ?= $(ADDFLAGS) -trimpath -ldflags "-w -s"
 CGOFLAG ?= CGO_ENABLED=0
 
-OS ?= $(shell go env GOOS)
-ARCH ?= $(shell go env GOARCH)
+OS=linux
+ARCH=amd64
 RELEASE_NAME=teleport-access-$(ACCESS_PLUGIN)
 RELEASE=$(RELEASE_NAME)-v$(VERSION)-$(OS)-$(ARCH)-bin
 
